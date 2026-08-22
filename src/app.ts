@@ -1,13 +1,18 @@
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
-import express, { type Application, type NextFunction, type Request, type Response } from 'express';
-import { AppError } from './errors/AppError.js';
+import express, { type Application, type Request, type Response } from 'express';
+import { globalErrorHandler } from './middlewares/globalErrorHandler.js';
 import { AdminRoutes } from './modules/admin/admin.route.js';
+import { CoachingRoutes } from './modules/coaching/coaching.route.js';
+import { EnrollmentRoutes } from './modules/enrollment/enrollment.route.js';
 import { ApplicationRoutes } from './modules/application/application.route.js';
 import { AuthRoutes } from './modules/auth/auth.route.js';
+import { ChatRoutes } from './modules/chat/chat.route.js';
 import { HireRoutes } from './modules/hire/hire.route.js';
+import { NotificationRoutes } from './modules/notification/notification.route.js';
 import { TuitionRoutes } from './modules/tuition/tuition.route.js';
 import { TutorRoutes } from './modules/tutor/tutor.route.js';
+import { UploadRoutes } from './modules/upload/upload.route.js';
 
 const app: Application = express();
 
@@ -33,7 +38,11 @@ app.get('/api/v1', (_req: Request, res: Response) => {
       tuitionJobs: '/api/v1/tuition-jobs',
       applications: '/api/v1/applications',
       hireRequests: '/api/v1/hire-requests',
+      chat: '/api/v1/chat',
+      notifications: '/api/v1/notifications',
+      upload: '/api/v1/upload',
       admin: '/api/v1/admin',
+      coaching: '/api/v1/coaching',
     },
   });
 });
@@ -44,26 +53,28 @@ app.use('/api/v1/tutors', TutorRoutes);
 app.use('/api/v1/tuition-jobs', TuitionRoutes);
 app.use('/api/v1/applications', ApplicationRoutes);
 app.use('/api/v1/hire-requests', HireRoutes);
+app.use('/api/v1/chat', ChatRoutes);
+app.use('/api/v1/notifications', NotificationRoutes);
+app.use('/api/v1/upload', UploadRoutes);
 app.use('/api/v1/admin', AdminRoutes);
+app.use('/api/v1/coaching', CoachingRoutes);
+app.use('/api/v1/enrollments', EnrollmentRoutes);
 
 // Global 404 Handler
 app.use((_req: Request, res: Response) => {
   res.status(404).json({
     success: false,
     message: 'API Endpoint Not Found!',
+    errors: [
+      {
+        path: '',
+        message: 'Requested route does not exist on this server.',
+      },
+    ],
   });
 });
 
 // Global Error Handler Middleware
-app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  const statusCode = err instanceof AppError ? err.statusCode : 500;
-  const message = err instanceof Error ? err.message : 'Internal Server Error!';
-
-  res.status(statusCode).json({
-    success: false,
-    message,
-    error: process.env.NODE_ENV === 'development' ? err : undefined,
-  });
-});
+app.use(globalErrorHandler);
 
 export default app;

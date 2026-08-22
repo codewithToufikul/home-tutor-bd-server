@@ -12,6 +12,7 @@ export interface IUser {
   password?: string;
   role: TRole;
   avatar?: string;
+  fcmTokens?: string[];
   isEmailVerified: boolean;
   isPhoneVerified: boolean;
   isApproved: boolean;

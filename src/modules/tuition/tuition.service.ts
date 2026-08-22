@@ -10,6 +10,8 @@ import {
   type OffsetMeta,
 } from '../../utils/pagination.js';
 import { Application } from '../application/application.model.js';
+import { NotificationService } from '../notification/notification.service.js';
+import { User } from '../user/user.model.js';
 import type { ITuitionJob } from './tuition.interface.js';
 import { TuitionJob } from './tuition.model.js';
 
@@ -22,18 +24,22 @@ interface ITuitionSearchQuery extends Record<string, string | undefined> {
   minSalary?: string;
   maxSalary?: string;
   status?: string;
+  approvalStatus?: string;
   sortBy?: string;
   sortOrder?: string;
-  // Offset pagination
   page?: string;
   limit?: string;
-  // Cursor pagination
   cursor?: string;
 }
 
 const buildFilterMatch = (query: ITuitionSearchQuery): Record<string, unknown> => {
   const match: Record<string, unknown> = {
-    approvalStatus: 'Approved',
+    // 'all' = no approvalStatus filter (admin view); default is 'Approved' for public
+    ...(query['approvalStatus'] && query['approvalStatus'] !== 'all'
+      ? { approvalStatus: query['approvalStatus'] }
+      : query['approvalStatus'] === 'all'
+        ? {}
+        : { approvalStatus: 'Approved' }),
     status: query.status || 'Open',
   };
 
@@ -69,7 +75,6 @@ const getAllJobs = async (query: ITuitionSearchQuery) => {
     },
   };
 
-  // ─── CURSOR PAGINATION ─────────────────────────────────────────────────
   if (isPaginationCursor(query)) {
     const decoded = decodeCursor(query.cursor!);
     if (!decoded) throw new AppError(400, 'Invalid cursor value!');
@@ -79,7 +84,7 @@ const getAllJobs = async (query: ITuitionSearchQuery) => {
     const pipeline = [
       { $match: filterMatch },
       userLookup,
-      { $unwind: { path: '$postedByUser', preserveNullAndEmpty: true } },
+      { $unwind: { path: '$postedByUser', preserveNullAndEmptyArrays: true } },
       { $match: cursorMatch },
       { $sort: sortStage },
       { $limit: limitNum + 1 },
@@ -103,14 +108,13 @@ const getAllJobs = async (query: ITuitionSearchQuery) => {
     return { data, meta };
   }
 
-  // ─── OFFSET PAGINATION ─────────────────────────────────────────────────
   const pageNum = Math.max(1, parseInt(query.page ?? '1', 10));
   const skip = (pageNum - 1) * limitNum;
 
   const pipeline = [
     { $match: filterMatch },
     userLookup,
-    { $unwind: { path: '$postedByUser', preserveNullAndEmpty: true } },
+    { $unwind: { path: '$postedByUser', preserveNullAndEmptyArrays: true } },
     { $sort: sortStage },
     {
       $facet: {
@@ -144,7 +148,27 @@ const getJobById = async (id: string) => {
 };
 
 const createJob = async (postedBy: string, payload: Partial<ITuitionJob>) => {
-  return await TuitionJob.create({ ...payload, postedBy, status: 'Open', approvalStatus: 'Approved' });
+  const job = await TuitionJob.create({ ...payload, postedBy, status: 'Open', approvalStatus: 'Pending' });
+
+  // Send notification to all admins about new tuition job pending approval
+  try {
+    const adminUsers = await User.find({ role: 'admin' });
+    const poster = await User.findById(postedBy);
+    for (const admin of adminUsers) {
+      await NotificationService.createNotification({
+        userId: String(admin._id),
+        type: 'tuition_job',
+        title: 'নতুন টিউশন জব পেন্ডিং অ্যাপ্রুভাল',
+        message: `${poster?.name || 'একজন গার্ডিয়ান/স্টুডেন্ট'} একটি নতুন টিউশন জব পোস্ট করেছেন। অ্যাপ্রুভ করুন।`,
+        referenceId: String(job._id),
+        referenceType: 'TuitionJob',
+      });
+    }
+  } catch (notifErr) {
+    console.warn('⚠️ Admin notification error (non-fatal):', notifErr);
+  }
+
+  return job;
 };
 
 const updateJob = async (id: string, userId: string, userRole: string, payload: Partial<ITuitionJob>) => {
@@ -174,7 +198,44 @@ const applyToJob = async (jobId: string, tutorId: string, expectedSalary?: numbe
   const existing = await Application.findOne({ jobId, tutorId });
   if (existing) throw new AppError(400, 'You have already applied for this job!');
 
-  return await Application.create({ jobId, tutorId, expectedSalary: expectedSalary ?? job.salary, status: 'Pending' });
+  const application = await Application.create({
+    jobId,
+    tutorId,
+    expectedSalary: expectedSalary ?? job.salary,
+    status: 'Pending',
+  });
+
+  // Notify guardian who posted the job
+  const tutorUser = await User.findById(tutorId);
+  const tutorName = tutorUser?.name || 'একজন টিউটর';
+
+  await NotificationService.createNotification({
+    userId: String(job.postedBy),
+    type: 'application',
+    title: 'নতুন টিউশন আবেদন',
+    message: `${tutorName} আপনার পোস্ট করা টিউশন জবে আবেদন করেছেন।`,
+    referenceId: jobId,
+    referenceType: 'TuitionJob',
+  });
+
+  // Notify all admins about the new tutor application
+  try {
+    const adminUsers = await User.find({ role: 'admin' });
+    for (const admin of adminUsers) {
+      await NotificationService.createNotification({
+        userId: String(admin._id),
+        type: 'application',
+        title: 'টিউশন জব আবেদন জমা হয়েছে',
+        message: `${tutorName} (${tutorUser?.email || ''}) একটি টিউশন জবে (${job.medium} - ৳${job.salary}) আবেদন করেছেন।`,
+        referenceId: jobId,
+        referenceType: 'TuitionJob',
+      });
+    }
+  } catch (err) {
+    console.warn('⚠️ Admin notification error on job application:', err);
+  }
+
+  return application;
 };
 
 export const TuitionService = {

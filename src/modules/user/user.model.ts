@@ -21,6 +21,7 @@ const userSchema = new Schema<IUser, UserModel>(
       default: 'student',
     },
     avatar: { type: String, default: '' },
+    fcmTokens: { type: [String], default: [] },
     isEmailVerified: { type: Boolean, default: false },
     isPhoneVerified: { type: Boolean, default: false },
     isApproved: { type: Boolean, default: false },
@@ -42,12 +43,9 @@ const userSchema = new Schema<IUser, UserModel>(
   },
 );
 
-// ─── Indexes ──────────────────────────────────────────────────────────────
-userSchema.index({ email: 1 }, { unique: true });  // already unique, explicit for clarity
-userSchema.index({ phone: 1 }, { sparse: true });   // sparse: phone can be empty
-userSchema.index({ role: 1, status: 1 });           // admin filtering by role + status
+userSchema.index({ phone: 1 }, { sparse: true });
+userSchema.index({ role: 1, status: 1 });
 
-// ─── Pre-save hook: hash password ─────────────────────────────────────────
 userSchema.pre('save', async function () {
   if (!this.isModified('password')) return;
   if (this.password) {
@@ -55,9 +53,8 @@ userSchema.pre('save', async function () {
   }
 });
 
-// ─── Static methods ───────────────────────────────────────────────────────
 userSchema.statics.isUserExistsByEmail = async function (email: string) {
-  return await this.findOne({ email }).select('+password');
+  return await this.findOne({ email: email.trim().toLowerCase() }).select('+password');
 };
 
 userSchema.statics.isPasswordMatched = async function (

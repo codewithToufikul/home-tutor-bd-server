@@ -1,4 +1,7 @@
+import { Notification } from '../notification/notification.model.js';
+import { NotificationService } from '../notification/notification.service.js';
 import { AppError } from '../../errors/AppError.js';
+import { addEmailJob } from '../../jobs/email.queue.js';
 import { generateOTP, verifyOTP } from '../../services/otp.service.js';
 import { createToken, verifyToken } from '../../utils/jwt.js';
 import { Tutor } from '../tutor/tutor.model.js';
@@ -19,7 +22,8 @@ const registerUser = async (payload: IRegisterUser) => {
     password: payload.password,
     role: payload.role,
     isEmailVerified: false,
-    isApproved: payload.role === 'admin',
+    // Admin, Student, Guardian auto-approved. Tutor & Coaching require admin approval.
+    isApproved: payload.role === 'admin' || payload.role === 'student' || payload.role === 'guardian',
   });
 
   if (payload.role === 'tutor') {
@@ -28,17 +32,45 @@ const registerUser = async (payload: IRegisterUser) => {
     });
   }
 
+  // Real-time notification to Admin for new Tutor / Coaching registrations
+  if (payload.role === 'tutor' || payload.role === 'coaching') {
+    try {
+      const adminUsers = await User.find({ role: 'admin' });
+      const roleLabel = payload.role === 'tutor' ? 'টিউটর' : 'কোচিং সেন্টার';
+      for (const admin of adminUsers) {
+        await NotificationService.createNotification({
+          userId: String(admin._id),
+          type: 'tutor_verification',
+          title: `👨‍🏫 নতুন ${roleLabel} রেজিস্ট্রেশন`,
+          message: `নতুন ${roleLabel} "${user.name || user.email}" অ্যাকাউন্ট খুলেছেন। অনুমোদনের জন্য আবেদন প্রক্রিয়াভুক্ত।`,
+          referenceId: String(user._id),
+          referenceType: payload.role === 'tutor' ? 'Tutor' : 'Coaching',
+        });
+      }
+    } catch (err) {
+      console.warn('⚠️ Admin registration notification error:', err);
+    }
+  }
+
   const otp = generateOTP(user.email);
+
+  // 🚀 Dispatched to BullMQ Queue asynchronously!
+  // API responds immediately to the user without waiting 5 seconds for the email server.
+  addEmailJob('send-email-otp', {
+    email: user.email,
+    name: user.name,
+    otp,
+  });
 
   return {
     email: user.email,
     otpSent: true,
-    otp, // In production, send via email service
+    otp, // Useful in dev mode
   };
 };
 
 const verifyEmailOTP = async (payload: IVerifyOTP) => {
-  const isValid = verifyOTP(payload.email, payload.otp);
+  const isValid = await verifyOTP(payload.email, payload.otp);
   if (!isValid) {
     throw new AppError(400, 'Invalid or expired OTP!');
   }
@@ -53,16 +85,66 @@ const verifyEmailOTP = async (payload: IVerifyOTP) => {
     throw new AppError(404, 'User not found!');
   }
 
-  return {
+  // Create Admin Notification for pending user approval
+  // Only tutor & coaching require admin approval — student & guardian are auto-approved
+  if (!user.isApproved && (user.role === 'tutor' || user.role === 'coaching')) {
+    try {
+      const adminUsers = await User.find({ role: 'admin' });
+      for (const admin of adminUsers) {
+        await NotificationService.createNotification({
+          userId: String(admin._id),
+          type: 'user_registration',
+          title: `নতুন ${user.role.toUpperCase()} অ্যাকাউন্ট প্যানেল রেজিষ্ট্রেশন`,
+          message: `${user.name} (${user.email}) ইমেইল ভেরিফাই করেছেন এবং অ্যাকাউন্ট অ্যাপ্রুভালের জন্য অপেক্ষা করছেন।`,
+          referenceId: String(user._id),
+          referenceType: 'User',
+        });
+      }
+    } catch (err) {
+      console.warn('⚠️ Admin notification creation error:', err);
+    }
+  }
+
+  // Welcome email dispatched via BullMQ
+  addEmailJob('send-welcome-email', {
     email: user.email,
-    isEmailVerified: true,
+    name: user.name,
+  });
+
+  const jwtPayload = {
+    userId: String(user._id),
+    email: user.email,
+    role: user.role,
+  };
+
+  const accessSecret = process.env.JWT_ACCESS_SECRET || 'fallback_access_secret';
+  const refreshSecret = process.env.JWT_REFRESH_SECRET || 'fallback_refresh_secret';
+
+  const accessToken = createToken(jwtPayload, accessSecret, ACCESS_TOKEN_EXPIRES_IN);
+  const refreshToken = createToken(jwtPayload, refreshSecret, REFRESH_TOKEN_EXPIRES_IN);
+
+  await User.findByIdAndUpdate(user._id, { lastLoginAt: new Date() });
+
+  return {
+    accessToken,
+    refreshToken,
+    user: {
+      _id: String(user._id),
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      avatar: user.avatar || '',
+      isEmailVerified: user.isEmailVerified,
+      isApproved: user.isApproved,
+    },
   };
 };
 
 const loginUser = async (payload: ILoginUser): Promise<IAuthResponse> => {
-  const user = await User.isUserExistsByEmail(payload.email);
+  const normalizedEmail = payload.email.trim().toLowerCase();
+  const user = await User.isUserExistsByEmail(normalizedEmail);
   if (!user) {
-    throw new AppError(404, 'User not found!');
+    throw new AppError(400, 'Invalid email or password!');
   }
 
   if (user.status === 'blocked') {
@@ -72,6 +154,19 @@ const loginUser = async (payload: ILoginUser): Promise<IAuthResponse> => {
   const isPasswordMatched = await User.isPasswordMatched(payload.password, user.password!);
   if (!isPasswordMatched) {
     throw new AppError(400, 'Invalid credentials!');
+  }
+
+  if (!user.isEmailVerified) {
+    const otp = generateOTP(user.email);
+    addEmailJob('send-email-otp', {
+      email: user.email,
+      name: user.name,
+      otp,
+    });
+    throw new AppError(
+      401,
+      'Email not verified! A new verification OTP code has been sent to your email.',
+    );
   }
 
   const jwtPayload = {
@@ -154,14 +249,22 @@ const forgotPassword = async (email: string) => {
   }
 
   const otp = generateOTP(email);
+
+  // Dispatch reset password email job to BullMQ queue
+  addEmailJob('send-reset-password-email', {
+    email: user.email,
+    name: user.name,
+    otp,
+  });
+
   return {
     message: 'Password reset OTP sent to your email.',
-    otp, // In production, send via email service
+    otp,
   };
 };
 
 const resetPassword = async (email: string, otp: string, newPassword: string) => {
-  const isValid = verifyOTP(email, otp);
+  const isValid = await verifyOTP(email, otp);
   if (!isValid) {
     throw new AppError(400, 'Invalid or expired OTP!');
   }
@@ -179,6 +282,24 @@ const resetPassword = async (email: string, otp: string, newPassword: string) =>
   };
 };
 
+const saveFcmToken = async (userId: string, fcmToken: string) => {
+  if (!fcmToken) {
+    throw new AppError(400, 'FCM Token is required');
+  }
+
+  const user = await User.findByIdAndUpdate(
+    userId,
+    { $addToSet: { fcmTokens: fcmToken } },
+    { new: true },
+  );
+
+  if (!user) {
+    throw new AppError(404, 'User not found!');
+  }
+
+  return { success: true, message: 'FCM token registered successfully.' };
+};
+
 export const AuthService = {
   registerUser,
   verifyEmailOTP,
@@ -187,4 +308,5 @@ export const AuthService = {
   getMe,
   forgotPassword,
   resetPassword,
+  saveFcmToken,
 };

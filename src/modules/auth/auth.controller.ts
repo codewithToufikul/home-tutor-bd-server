@@ -104,6 +104,16 @@ const resetPassword = async (req: Request, res: Response) => {
   });
 };
 
+const saveFcmToken = async (req: CustomRequest, res: Response) => {
+  const result = await AuthService.saveFcmToken(req.user!.userId, req.body.fcmToken);
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: 'FCM Token registered successfully.',
+    data: result,
+  });
+};
+
 export const AuthController = {
   register,
   verifyOTP,
@@ -113,4 +123,5 @@ export const AuthController = {
   getMe,
   forgotPassword,
   resetPassword,
+  saveFcmToken,
 };

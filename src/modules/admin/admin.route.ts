@@ -11,11 +11,13 @@ router.get('/dashboard', AdminController.getDashboardStats);
 
 router.get('/users', AdminController.getAllUsers);
 router.patch('/users/:id/status', AdminController.updateUserStatus);
+router.delete('/users/:id', AdminController.deleteUser);
 
 router.get('/tutors/pending', AdminController.getPendingTutors);
 router.patch('/tutors/:id/approve', AdminController.approveTutor);
 
 router.get('/jobs/pending', AdminController.getPendingJobs);
+router.get('/applications', AdminController.getAllApplications);
 router.patch('/jobs/:id/approve', AdminController.approveJob);
 
 router.get('/verifications', AdminController.getVerifications);

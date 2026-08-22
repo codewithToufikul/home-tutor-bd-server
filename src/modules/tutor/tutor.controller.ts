@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import type { CustomRequest } from '../../middlewares/auth.middleware.js';
+import type { PaginationMeta } from '../../utils/pagination.js';
 import { sendResponse } from '../../utils/response.js';
 import { TutorService } from './tutor.service.js';
 
@@ -10,7 +11,7 @@ const getAllTutors = async (req: Request, res: Response) => {
     success: true,
     message: 'Tutors retrieved successfully.',
     data: result.data,
-    meta: result.meta,
+    meta: result.meta as PaginationMeta,
   });
 };
 

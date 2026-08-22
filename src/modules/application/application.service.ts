@@ -1,6 +1,7 @@
 import { AppError } from '../../errors/AppError.js';
 import { TuitionJob } from '../tuition/tuition.model.js';
 import { Application } from './application.model.js';
+import { NotificationService } from '../notification/notification.service.js';
 
 const getMyApplications = async (tutorId: string) => {
   const applications = await Application.find({ tutorId })
@@ -43,6 +44,21 @@ const acceptApplication = async (id: string, userId: string, userRole: string) =
   await application.save();
 
   await TuitionJob.findByIdAndUpdate(job._id, { status: 'Matched' });
+
+  // Send notification to Tutor that application was approved/accepted!
+  try {
+    const jobMedium = (job as any)?.medium || 'টিউশন';
+    await NotificationService.createNotification({
+      userId: String(application.tutorId),
+      type: 'job_approval',
+      title: 'টিউশন আবেদন অনুমোদন করা হয়েছে 🎉',
+      message: `অভিনন্দন! আপনার ${jobMedium} টিউশনের আবেদনটি সফলভাবে অনুমোদন (Approved/Accepted) করা হয়েছে।`,
+      referenceId: String(job._id),
+      referenceType: 'TuitionJob',
+    });
+  } catch (err) {
+    console.warn('⚠️ Tutor application accepted notification error:', err);
+  }
 
   return application;
 };

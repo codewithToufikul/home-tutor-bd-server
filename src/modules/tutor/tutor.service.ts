@@ -1,4 +1,5 @@
 import { AppError } from '../../errors/AppError.js';
+import { CACHE_TTL, CacheService } from '../../services/cache.service.js';
 import {
   buildCursorMatchStage,
   buildNextCursor,
@@ -25,14 +26,11 @@ interface ITutorSearchQuery extends Record<string, string | undefined> {
   isPremium?: string;
   sortBy?: string;
   sortOrder?: string;
-  // Offset pagination
   page?: string;
   limit?: string;
-  // Cursor pagination
   cursor?: string;
 }
 
-// ─── Build $match from filters ────────────────────────────────────────────
 const buildFilterMatch = (query: ITutorSearchQuery): Record<string, unknown> => {
   const match: Record<string, unknown> = {};
 
@@ -56,7 +54,6 @@ const buildFilterMatch = (query: ITutorSearchQuery): Record<string, unknown> => 
   return match;
 };
 
-// ─── Shared pipeline stages (lookup + exclude blocked) ────────────────────
 const userLookupStages = [
   {
     $lookup: {
@@ -67,31 +64,38 @@ const userLookupStages = [
       pipeline: [{ $project: { name: 1, email: 1, phone: 1, avatar: 1, status: 1 } }],
     },
   },
-  { $unwind: { path: '$user', preserveNullAndEmpty: false } },
+  { $unwind: { path: '$user', preserveNullAndEmptyArrays: false } },
   { $match: { 'user.status': { $ne: 'blocked' } } },
 ];
 
-// ─── Search Tutors — supports both offset & cursor pagination ─────────────
 const searchTutors = async (query: ITutorSearchQuery) => {
+  // Build Redis cache key based on query parameters
+  const cacheKey = `tutors:search:${new URLSearchParams(query as Record<string, string>).toString()}`;
+  const cachedData = await CacheService.getCache<{ data: unknown; meta: unknown }>(cacheKey);
+
+  if (cachedData) {
+    return cachedData;
+  }
+
   const limitNum = Math.min(50, Math.max(1, parseInt(query.limit ?? '20', 10)));
   const sortMode = resolveSortMode(query.sortBy, query.sortOrder);
   const sortStage = buildSortStage(sortMode);
   const filterMatch = buildFilterMatch(query);
 
-  // ─── CURSOR PAGINATION ─────────────────────────────────────────────────
+  let resultData;
+
   if (isPaginationCursor(query)) {
     const decoded = decodeCursor(query.cursor!);
     if (!decoded) throw new AppError(400, 'Invalid cursor value!');
 
     const cursorMatch = buildCursorMatchStage(decoded, sortMode);
 
-    // Fetch limit+1 to know if there's a next page
     const pipeline = [
       { $match: filterMatch },
       ...userLookupStages,
-      { $match: cursorMatch },      // keyset condition
+      { $match: cursorMatch },
       { $sort: sortStage },
-      { $limit: limitNum + 1 },     // +1 to detect hasMore
+      { $limit: limitNum + 1 },
       { $project: { userId: 0, nid: 0, cv: 0 } },
     ];
 
@@ -107,68 +111,93 @@ const searchTutors = async (query: ITutorSearchQuery) => {
       limit: limitNum,
       nextCursor,
       hasMore,
-      hasPrevCursor: true, // cursor always means we're past page 1
+      hasPrevCursor: true,
     };
 
-    return { data, meta };
+    resultData = { data, meta };
+  } else {
+    const pageNum = Math.max(1, parseInt(query.page ?? '1', 10));
+    const skip = (pageNum - 1) * limitNum;
+
+    const pipeline = [
+      { $match: filterMatch },
+      ...userLookupStages,
+      { $sort: sortStage },
+      {
+        $facet: {
+          data: [
+            { $skip: skip },
+            { $limit: limitNum },
+            { $project: { userId: 0, nid: 0, cv: 0 } },
+          ],
+          totalCount: [{ $count: 'count' }],
+        },
+      },
+    ];
+
+    const [result] = await Tutor.aggregate(pipeline);
+    const total: number = result?.totalCount?.[0]?.count ?? 0;
+    const totalPages = Math.ceil(total / limitNum);
+
+    const meta: OffsetMeta = {
+      type: 'offset',
+      page: pageNum,
+      limit: limitNum,
+      total,
+      totalPages,
+      hasNextPage: pageNum < totalPages,
+      hasPrevPage: pageNum > 1,
+    };
+
+    resultData = { data: result?.data ?? [], meta };
   }
 
-  // ─── OFFSET PAGINATION (page + limit) ─────────────────────────────────
-  const pageNum = Math.max(1, parseInt(query.page ?? '1', 10));
-  const skip = (pageNum - 1) * limitNum;
+  // Cache response for 300 seconds
+  await CacheService.setCache(cacheKey, resultData, CACHE_TTL.SEARCH_TUTORS);
 
-  const pipeline = [
-    { $match: filterMatch },
-    ...userLookupStages,
-    { $sort: sortStage },
-    {
-      $facet: {
-        data: [
-          { $skip: skip },
-          { $limit: limitNum },
-          { $project: { userId: 0, nid: 0, cv: 0 } },
-        ],
-        totalCount: [{ $count: 'count' }],
-      },
-    },
-  ];
-
-  const [result] = await Tutor.aggregate(pipeline);
-  const total: number = result?.totalCount?.[0]?.count ?? 0;
-  const totalPages = Math.ceil(total / limitNum);
-
-  const meta: OffsetMeta = {
-    type: 'offset',
-    page: pageNum,
-    limit: limitNum,
-    total,
-    totalPages,
-    hasNextPage: pageNum < totalPages,
-    hasPrevPage: pageNum > 1,
-  };
-
-  return { data: result?.data ?? [], meta };
+  return resultData;
 };
 
-// ─── Other service methods ────────────────────────────────────────────────
 const getTutorById = async (id: string) => {
+  const cacheKey = `tutor:detail:${id}`;
+  const cached = await CacheService.getCache(cacheKey);
+  if (cached) return cached;
+
   const tutor = await Tutor.findById(id).populate('userId', 'name email phone avatar status');
   if (!tutor) throw new AppError(404, 'Tutor profile not found!');
+
+  await CacheService.setCache(cacheKey, tutor, CACHE_TTL.SEARCH_TUTORS);
   return tutor;
 };
 
 const createMyProfile = async (userId: string, payload: Partial<ITutor>) => {
   const existing = await Tutor.findOne({ userId });
   if (existing) throw new AppError(400, 'Tutor profile already exists!');
-  return await Tutor.create({ ...payload, userId });
+
+  const created = await Tutor.create({ ...payload, userId });
+
+  // Cache invalidation
+  await CacheService.invalidatePattern('tutors:search:*');
+  await CacheService.deleteCache('homepage:data');
+
+  return created;
 };
 
 const updateMyProfile = async (userId: string, payload: Partial<ITutor>) => {
-  return await Tutor.findOneAndUpdate(
+  const profile = await Tutor.findOneAndUpdate(
     { userId },
     { $set: payload },
     { new: true, upsert: true, runValidators: true },
   );
+
+  // Invalidate tutor search and detail caches
+  await CacheService.invalidatePattern('tutors:search:*');
+  if (profile?._id) {
+    await CacheService.deleteCache(`tutor:detail:${profile._id}`);
+  }
+  await CacheService.deleteCache('homepage:data');
+
+  return profile;
 };
 
 const getMyProfile = async (userId: string) => {
@@ -199,6 +228,12 @@ const addReview = async (tutorId: string, rating: number) => {
   tutor.rating = Number(((tutor.rating * tutor.reviewCount + rating) / newCount).toFixed(1));
   tutor.reviewCount = newCount;
   await tutor.save();
+
+  // Cache invalidation
+  await CacheService.invalidatePattern('tutors:search:*');
+  await CacheService.deleteCache(`tutor:detail:${tutorId}`);
+  await CacheService.deleteCache('homepage:data');
+
   return tutor;
 };
 

@@ -1,3 +1,4 @@
+import { NotificationService } from '../notification/notification.service.js';
 import { AppError } from '../../errors/AppError.js';
 import { Application } from '../application/application.model.js';
 import { Payment, Withdrawal } from '../payment/payment.model.js';
@@ -37,7 +38,7 @@ const getAllUsers = async (query: Record<string, unknown>) => {
 };
 
 const updateUserStatus = async (id: string, status: 'active' | 'blocked' | 'pending') => {
-  const user = await User.findByIdAndUpdate(id, { status }, { new: true });
+  const user = await User.findByIdAndUpdate(id, { status }, { returnDocument: 'after' });
   if (!user) {
     throw new AppError(404, 'User not found!');
   }
@@ -49,14 +50,46 @@ const getPendingTutors = async () => {
   return tutors;
 };
 
-const approveTutor = async (tutorId: string, isApproved: boolean) => {
-  const tutor = await Tutor.findByIdAndUpdate(tutorId, { isVerified: isApproved }, { new: true });
-  if (!tutor) {
-    throw new AppError(404, 'Tutor profile not found!');
+const approveTutor = async (id: string, isApproved: boolean) => {
+  // Update User approval status
+  let user = await User.findByIdAndUpdate(
+    id,
+    { isApproved },
+    { returnDocument: 'after' },
+  );
+
+  // Update or create corresponding Tutor profile
+  let tutor = await Tutor.findOne({ $or: [{ _id: id }, { userId: id }] });
+  if (tutor) {
+    tutor.isVerified = isApproved;
+    await tutor.save();
+    if (!user && tutor.userId) {
+      user = await User.findByIdAndUpdate(tutor.userId, { isApproved }, { returnDocument: 'after' });
+    }
+  } else if (user && user.role === 'tutor') {
+    tutor = await Tutor.create({ userId: user._id, isVerified: isApproved });
   }
 
-  await User.findByIdAndUpdate(tutor.userId, { isApproved });
-  return tutor;
+  if (!user && !tutor) {
+    throw new AppError(404, 'User or Tutor profile not found!');
+  }
+
+  if (user && isApproved) {
+    try {
+      await NotificationService.createNotification({
+        userId: String(user._id),
+        type: 'tutor_verification',
+        title: 'অ্যাকাউন্ট অনুমোদন সফল হয়েছে 🎉',
+        message: 'অভিনন্দন! অ্যাডমিন আপনার টিউটর অ্যাকাউন্ট অনুমোদন করেছেন। এখন থেকে আপনি সকল টিউশন ড্যাশবোর্ড সুবিধা পাবেন।',
+        referenceId: String(user._id),
+        referenceType: 'User',
+      });
+    } catch (err) {
+      console.warn('⚠️ Tutor account approval notification error:', err);
+    }
+  }
+
+  return { user, tutor };
 };
 
 const getPendingJobs = async () => {
@@ -65,7 +98,7 @@ const getPendingJobs = async () => {
 };
 
 const approveJob = async (jobId: string, approvalStatus: 'Approved' | 'Rejected') => {
-  const job = await TuitionJob.findByIdAndUpdate(jobId, { approvalStatus }, { new: true });
+  const job = await TuitionJob.findByIdAndUpdate(jobId, { approvalStatus }, { returnDocument: 'after' });
   if (!job) {
     throw new AppError(404, 'Tuition job not found!');
   }
@@ -129,15 +162,32 @@ const updatePaymentStatus = async (
     return withdrawal;
   }
 
-  const payment = await Payment.findByIdAndUpdate(id, { status }, { new: true });
+  const payment = await Payment.findByIdAndUpdate(id, { status }, { returnDocument: 'after' });
   if (!payment) {
     throw new AppError(404, 'Payment or withdrawal record not found!');
   }
   return payment;
 };
 
+const deleteUser = async (id: string) => {
+  const user = await User.findByIdAndDelete(id);
+  if (!user) {
+    throw new AppError(404, 'User not found!');
+  }
+  await Tutor.deleteMany({ userId: id });
+  return user;
+};
+
+const getAllApplications = async () => {
+  return await Application.find()
+    .populate('jobId')
+    .populate('tutorId', 'name email phone avatar');
+};
+
 export const AdminService = {
+  deleteUser,
   getDashboardStats,
+  getAllApplications,
   getAllUsers,
   updateUserStatus,
   getPendingTutors,

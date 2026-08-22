@@ -1,0 +1,26 @@
+import { Worker, type Job } from 'bullmq';
+import { redisConnectionOptions } from '../config/queue.js';
+
+export const PAYMENT_QUEUE_NAME = 'payment-queue';
+
+interface IPaymentJobData {
+  transactionId: string;
+  userId: string;
+  amount: number;
+}
+
+export const paymentWorker = new Worker<IPaymentJobData>(
+  PAYMENT_QUEUE_NAME,
+  async (job: Job<IPaymentJobData>) => {
+    console.log(`⚙️ [BullMQ Worker processing] Payment Verification Job "${job.name}" for Txn ${job.data.transactionId}...`);
+    // Async payment gateway verification / payout processing
+  },
+  {
+    connection: redisConnectionOptions,
+    concurrency: 3,
+  },
+);
+
+paymentWorker.on('completed', (job) => {
+  console.log(`✅ [BullMQ Worker] Payment Job "${job.name}" (ID: ${job.id}) completed.`);
+});

@@ -67,8 +67,20 @@ const updatePaymentStatus = async (req: CustomRequest, res: Response) => {
   sendResponse(res, { statusCode: 200, success: true, message: 'Payment status updated.', data: result });
 };
 
+const deleteUser = async (req: Request, res: Response) => {
+  const result = await AdminService.deleteUser(String(req.params['id']));
+  sendResponse(res, { statusCode: 200, success: true, message: 'User deleted successfully.', data: result });
+};
+
+const getAllApplications = async (_req: Request, res: Response) => {
+  const result = await AdminService.getAllApplications();
+  sendResponse(res, { statusCode: 200, success: true, message: 'Applications retrieved.', data: result });
+};
+
 export const AdminController = {
+  deleteUser,
   getDashboardStats,
+  getAllApplications,
   getAllUsers,
   updateUserStatus,
   getPendingTutors,
