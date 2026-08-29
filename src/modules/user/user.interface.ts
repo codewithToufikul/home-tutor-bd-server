@@ -7,10 +7,13 @@ export type TUserStatus = (typeof USER_STATUSES)[number];
 export interface IUser {
   _id?: Types.ObjectId;
   name: string;
+  username?: string;
   email: string;
   phone?: string;
   password?: string;
   role: TRole;
+  permissions?: string[];
+  createdBy?: Types.ObjectId;
   avatar?: string;
   fcmTokens?: string[];
   isEmailVerified: boolean;
@@ -24,5 +27,6 @@ export interface IUser {
 
 export interface UserModel extends Model<IUser> {
   isUserExistsByEmail(email: string): Promise<IUser | null>;
+  isUserExistsByIdentifier(identifier: string): Promise<IUser | null>;
   isPasswordMatched(givenPassword: string, savedPassword: string): Promise<boolean>;
 }

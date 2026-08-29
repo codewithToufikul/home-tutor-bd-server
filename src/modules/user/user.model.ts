@@ -6,6 +6,13 @@ import type { IUser, UserModel } from './user.interface.js';
 const userSchema = new Schema<IUser, UserModel>(
   {
     name: { type: String, required: [true, 'Name is required'], trim: true },
+    username: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true,
+      lowercase: true,
+    },
     email: {
       type: String,
       required: [true, 'Email is required'],
@@ -20,6 +27,8 @@ const userSchema = new Schema<IUser, UserModel>(
       enum: { values: USER_ROLES, message: '{VALUE} is not a valid role' },
       default: 'student',
     },
+    permissions: { type: [String], default: [] },
+    createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     avatar: { type: String, default: '' },
     fcmTokens: { type: [String], default: [] },
     isEmailVerified: { type: Boolean, default: false },
@@ -34,6 +43,7 @@ const userSchema = new Schema<IUser, UserModel>(
   },
   {
     timestamps: true,
+    strict: false,
     toJSON: {
       transform: function (_doc, ret) {
         delete (ret as Record<string, unknown>).password;
@@ -44,6 +54,7 @@ const userSchema = new Schema<IUser, UserModel>(
 );
 
 userSchema.index({ phone: 1 }, { sparse: true });
+userSchema.index({ username: 1 }, { sparse: true, unique: true });
 userSchema.index({ role: 1, status: 1 });
 
 userSchema.pre('save', async function () {
@@ -55,6 +66,13 @@ userSchema.pre('save', async function () {
 
 userSchema.statics.isUserExistsByEmail = async function (email: string) {
   return await this.findOne({ email: email.trim().toLowerCase() }).select('+password');
+};
+
+userSchema.statics.isUserExistsByIdentifier = async function (identifier: string) {
+  const normalized = identifier.trim().toLowerCase();
+  return await this.findOne({
+    $or: [{ email: normalized }, { username: normalized }],
+  }).select('+password');
 };
 
 userSchema.statics.isPasswordMatched = async function (

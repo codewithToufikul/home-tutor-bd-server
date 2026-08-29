@@ -23,9 +23,25 @@ const rejectApplication = async (req: CustomRequest, res: Response) => {
   sendResponse(res, { statusCode: 200, success: true, message: 'Application rejected successfully.', data: result });
 };
 
+const withdrawApplication = async (req: CustomRequest, res: Response) => {
+  const result = await ApplicationService.withdrawApplication(String(req.params['id']), req.user!.userId);
+  sendResponse(res, { statusCode: 200, success: true, message: 'Application withdrawn successfully.', data: result });
+};
+
+const getJobApplications = async (req: CustomRequest, res: Response) => {
+  const result = await ApplicationService.getJobApplications(
+    String(req.params['jobId']),
+    req.user!.userId,
+    req.user!.role,
+  );
+  sendResponse(res, { statusCode: 200, success: true, message: 'Job applications retrieved successfully.', data: result });
+};
+
 export const ApplicationController = {
   getMyApplications,
   getApplicationById,
   acceptApplication,
   rejectApplication,
+  withdrawApplication,
+  getJobApplications,
 };

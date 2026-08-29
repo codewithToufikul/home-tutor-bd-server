@@ -77,6 +77,31 @@ const getAllApplications = async (_req: Request, res: Response) => {
   sendResponse(res, { statusCode: 200, success: true, message: 'Applications retrieved.', data: result });
 };
 
+const createStaff = async (req: CustomRequest, res: Response) => {
+  const result = await AdminService.createStaff(req.user!.userId, req.body);
+  sendResponse(res, { statusCode: 201, success: true, message: 'New staff created successfully.', data: result });
+};
+
+const getAllStaff = async (_req: Request, res: Response) => {
+  const result = await AdminService.getAllStaff();
+  sendResponse(res, { statusCode: 200, success: true, message: 'Staff list retrieved.', data: result });
+};
+
+const updateStaffStatus = async (req: Request, res: Response) => {
+  const result = await AdminService.updateStaffStatus(String(req.params['id']), req.body.status);
+  sendResponse(res, { statusCode: 200, success: true, message: 'Staff status updated.', data: result });
+};
+
+const updateStaffPermissions = async (req: Request, res: Response) => {
+  const result = await AdminService.updateStaffPermissions(String(req.params['id']), req.body.permissions);
+  sendResponse(res, { statusCode: 200, success: true, message: 'Staff permissions updated.', data: result });
+};
+
+const deleteStaff = async (req: Request, res: Response) => {
+  const result = await AdminService.deleteStaff(String(req.params['id']));
+  sendResponse(res, { statusCode: 200, success: true, message: 'Staff account deleted.', data: result });
+};
+
 export const AdminController = {
   deleteUser,
   getDashboardStats,
@@ -91,4 +116,9 @@ export const AdminController = {
   updateVerificationStatus,
   getPayments,
   updatePaymentStatus,
+  createStaff,
+  getAllStaff,
+  updateStaffStatus,
+  updateStaffPermissions,
+  deleteStaff,
 };

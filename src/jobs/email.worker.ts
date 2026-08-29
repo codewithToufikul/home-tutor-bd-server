@@ -18,7 +18,7 @@ export const emailWorker = new Worker<IEmailJobData>(
     switch (job.name) {
       case 'send-email-otp':
         if (job.data.otp) {
-          await sendOTPEmail(job.data.email, job.data.otp);
+          await sendOTPEmail(job.data.email, job.data.otp, job.data.name);
         }
         break;
 
@@ -28,7 +28,7 @@ export const emailWorker = new Worker<IEmailJobData>(
 
       case 'send-reset-password-email':
         if (job.data.otp) {
-          await sendOTPEmail(job.data.email, job.data.otp);
+          await sendOTPEmail(job.data.email, job.data.otp, job.data.name);
         }
         break;
 

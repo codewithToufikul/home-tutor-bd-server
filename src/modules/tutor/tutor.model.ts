@@ -25,6 +25,7 @@ const tutorSchema = new Schema<ITutor, TutorModel>(
     subjects: { type: [String], default: [] },
     preferredAreas: { type: [String], default: [] },
     mediums: { type: [String], default: [] },
+    preferredClasses: { type: [String], default: [] },
     salary: { type: Number, default: 0 },
     gender: {
       type: String,
@@ -44,7 +45,7 @@ const tutorSchema = new Schema<ITutor, TutorModel>(
     certificates: { type: [String], default: [] },
     cv: { type: String, default: '' },
   },
-  { timestamps: true },
+  { timestamps: true, strict: false },
 );
 
 // ─── Single Field Indexes ──────────────────────────────────────────────────

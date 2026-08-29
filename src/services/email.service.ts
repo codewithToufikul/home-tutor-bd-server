@@ -1,58 +1,121 @@
 import nodemailer from 'nodemailer';
+import dotenv from 'dotenv';
 
-const SMTP_HOST = process.env.SMTP_HOST || '';
-const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587', 10);
-const SMTP_USER = process.env.SMTP_USER || '';
-const SMTP_PASS = process.env.SMTP_PASS || '';
-const EMAIL_FROM = process.env.EMAIL_FROM || '"Home Tutor BD" <noreply@hometutorbd.com>';
+dotenv.config();
 
-const transporter = (SMTP_USER && SMTP_PASS)
-  ? nodemailer.createTransport({
-      host: SMTP_HOST || 'smtp.gmail.com',
-      port: SMTP_PORT,
-      secure: SMTP_PORT === 465,
-      auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASS,
-      },
-    })
-  : null;
+const SMTP_HOST = process.env.SMTP_HOST || 'cloud.webfastdns.com';
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || '465', 10);
+const SMTP_USER = process.env.SMTP_USER || 'hello@hometutorproviderbd.com';
+const SMTP_PASS = process.env.SMTP_PASS || '_M*yumO*!dakw$aR';
+const EMAIL_FROM = process.env.EMAIL_FROM || '"Home Tutor Provider BD" <hello@hometutorproviderbd.com>';
 
-export const sendOTPEmail = async (to: string, otp: string): Promise<boolean> => {
-  if (transporter) {
-    try {
-      await transporter.sendMail({
-        from: EMAIL_FROM,
-        to,
-        subject: '🏠 Home Tutor BD - Your Email Verification OTP',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 12px;">
-            <h2 style="color: #2563eb; text-align: center;">Welcome to Home Tutor BD!</h2>
-            <p>Hello,</p>
-            <p>Your 6-digit OTP code for email verification is:</p>
-            <div style="background-color: #f1f5f9; padding: 15px; text-align: center; border-radius: 8px; font-size: 28px; font-weight: bold; letter-spacing: 5px; color: #1e293b;">
-              ${otp}
-            </div>
-            <p style="color: #64748b; font-size: 13px; margin-top: 20px;">This code will expire in 10 minutes. If you did not request this, please ignore this email.</p>
-          </div>
-        `,
-      });
-      console.log(`✉️ [SMTP Real Email Sent] OTP sent successfully to ${to}`);
-      return true;
-    } catch (err) {
-      console.error(`❌ [SMTP Error] Failed to send email to ${to}:`, err instanceof Error ? err.message : err);
-    }
+export const getMailTransporter = () => {
+  return nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_PORT === 465, // true for port 465 SSL
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS,
+    },
+    tls: {
+      rejectUnauthorized: false,
+    },
+  });
+};
+
+export const sendOTPEmail = async (to: string, otp: string, userName?: string): Promise<boolean> => {
+  const recipientName = userName || 'Valued User';
+  const transporter = getMailTransporter();
+
+  try {
+    const info = await transporter.sendMail({
+      from: EMAIL_FROM,
+      to,
+      subject: `🔐 ${otp} is your Home Tutor Provider BD Verification Code`,
+      html: `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Email Verification Code</title>
+        </head>
+        <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; color: #1e293b;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f8fafc; padding: 40px 10px;">
+            <tr>
+              <td align="center">
+                <table width="100%" max-width="540px" cellpadding="0" cellspacing="0" style="max-width: 540px; background-color: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 10px 30px rgba(0, 31, 63, 0.08); border: 1px solid #e2e8f0;">
+                  
+                  <!-- Header -->
+                  <tr>
+                    <td style="background: linear-gradient(135deg, #001F3F 0%, #003366 100%); padding: 36px 30px; text-align: center;">
+                      <h1 style="color: #ffffff; font-size: 24px; font-weight: 800; margin: 0; letter-spacing: -0.5px;">
+                        Home Tutor Provider <span style="color: #10b981;">BD</span>
+                      </h1>
+                      <p style="color: rgba(255, 255, 255, 0.8); font-size: 13px; margin: 6px 0 0 0; font-weight: 500;">
+                        #1 Verified Tutor Platform in Bangladesh
+                      </p>
+                    </td>
+                  </tr>
+
+                  <!-- Content Body -->
+                  <tr>
+                    <td style="padding: 36px 32px 28px 32px;">
+                      <h2 style="color: #0f172a; font-size: 20px; font-weight: 700; margin: 0 0 12px 0;">
+                        Hello, ${recipientName}!
+                      </h2>
+                      <p style="color: #475569; font-size: 14px; line-height: 22px; margin: 0 0 24px 0;">
+                        Thank you for choosing <strong>Home Tutor Provider BD</strong>. Please use the following 6-digit One-Time Password (OTP) to verify your email address and activate your account:
+                      </p>
+
+                      <!-- OTP Box -->
+                      <div style="background: #f0fdf4; border: 2px dashed #10b981; border-radius: 16px; padding: 24px 16px; text-align: center; margin: 0 0 24px 0;">
+                        <span style="font-size: 12px; font-weight: 700; color: #047857; text-transform: uppercase; letter-spacing: 1.5px; display: block; margin-bottom: 8px;">
+                          Verification Code
+                        </span>
+                        <span style="font-family: 'Courier New', Courier, monospace; font-size: 38px; font-weight: 800; color: #065f46; letter-spacing: 8px; display: inline-block;">
+                          ${otp}
+                        </span>
+                      </div>
+
+                      <div style="background-color: #f8fafc; border-radius: 12px; padding: 14px 16px; margin-bottom: 24px;">
+                        <p style="margin: 0; font-size: 12px; color: #64748b; line-height: 18px;">
+                          ⏱️ <strong>Note:</strong> This verification code is valid for <strong>10 minutes</strong>. For your security, never share this OTP with anyone.
+                        </p>
+                      </div>
+
+                      <p style="color: #475569; font-size: 13px; line-height: 20px; margin: 0;">
+                        If you did not request this verification, please safely ignore this email or contact our support team.
+                      </p>
+                    </td>
+                  </tr>
+
+                  <!-- Footer -->
+                  <tr>
+                    <td style="background-color: #f8fafc; padding: 24px 32px; text-align: center; border-top: 1px solid #e2e8f0;">
+                      <p style="color: #64748b; font-size: 12px; margin: 0 0 6px 0;">
+                        Home Tutor Provider BD • Helpline: +880 1928-325460
+                      </p>
+                      <p style="color: #94a3b8; font-size: 11px; margin: 0;">
+                        © ${new Date().getFullYear()} Home Tutor Provider BD. All rights reserved.
+                      </p>
+                    </td>
+                  </tr>
+
+                </table>
+              </td>
+            </tr>
+          </table>
+        </body>
+        </html>
+      `,
+    });
+
+    console.log(`✉️ [SMTP Real Email Sent] OTP email sent successfully to ${to} (MessageID: ${info.messageId})`);
+    return true;
+  } catch (err) {
+    console.error(`❌ [SMTP Error] Failed to send email to ${to}:`, err instanceof Error ? err.message : err);
+    return false;
   }
-
-  // High-visibility terminal output for development mode
-  console.log(`
-\x1b[36m╔═════════════════════════════════════════════════════════════╗
-║ 📩 [DEV MODE] EMAIL OTP SIMULATOR                           ║
-╠═════════════════════════════════════════════════════════════╣
-║ 👤 To      : \x1b[33m${to.padEnd(47, ' ')}\x1b[36m║
-║ 🔑 OTP CODE: \x1b[1m\x1b[32m${otp.padEnd(47, ' ')}\x1b[0m\x1b[36m║
-║ ⏳ Expires : 10 minutes                                     ║
-╚═════════════════════════════════════════════════════════════╝\x1b[0m
-  `);
-  return true;
 };

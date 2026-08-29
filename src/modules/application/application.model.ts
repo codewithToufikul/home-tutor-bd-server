@@ -18,6 +18,27 @@ const applicationSchema = new Schema<IApplication, ApplicationModel>(
       type: Number,
       default: 0,
     },
+    /** টিউটরের আবেদনপত্র / পরিচিতি বার্তা */
+    coverLetter: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    /** কখন পড়াতে পারবেন: morning | afternoon | evening */
+    availableTime: {
+      type: [String],
+      default: [],
+    },
+    /** Auto Matching Engine-এর দেওয়া Score (0-100+), Tutor Apply করলে calculate হয় */
+    matchScore: {
+      type: Number,
+      default: null,
+    },
+    /** System কর্তৃক Auto Shortlisted হলে true */
+    isAutoShortlisted: {
+      type: Boolean,
+      default: false,
+    },
     status: {
       type: String,
       enum: {
@@ -36,6 +57,12 @@ const applicationSchema = new Schema<IApplication, ApplicationModel>(
   },
 );
 
+// ─── Indexes ──────────────────────────────────────────────────────────────────
 applicationSchema.index({ jobId: 1, tutorId: 1 }, { unique: true });
+applicationSchema.index({ tutorId: 1, status: 1 });
+applicationSchema.index({ jobId: 1, status: 1 });
+applicationSchema.index({ matchScore: -1 });
+applicationSchema.index({ isAutoShortlisted: 1 });
 
 export const Application = model<IApplication, ApplicationModel>('Application', applicationSchema);
+

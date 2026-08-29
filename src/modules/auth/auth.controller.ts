@@ -83,6 +83,16 @@ const getMe = async (req: CustomRequest, res: Response) => {
   });
 };
 
+const updateMe = async (req: CustomRequest, res: Response) => {
+  const result = await AuthService.updateMe(req.user!.userId, req.body);
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: 'User profile updated successfully.',
+    data: result,
+  });
+};
+
 const forgotPassword = async (req: Request, res: Response) => {
   const result = await AuthService.forgotPassword(req.body.email);
   sendResponse(res, {
@@ -121,6 +131,7 @@ export const AuthController = {
   refreshToken,
   logout,
   getMe,
+  updateMe,
   forgotPassword,
   resetPassword,
   saveFcmToken,

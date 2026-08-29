@@ -13,6 +13,7 @@ import { NotificationRoutes } from './modules/notification/notification.route.js
 import { TuitionRoutes } from './modules/tuition/tuition.route.js';
 import { TutorRoutes } from './modules/tutor/tutor.route.js';
 import { UploadRoutes } from './modules/upload/upload.route.js';
+import { ITServiceRoutes } from './modules/it-service/itService.route.js';
 
 const app: Application = express();
 
@@ -49,6 +50,7 @@ app.get('/api/v1', (_req: Request, res: Response) => {
 
 // Application Routes
 app.use('/api/v1/auth', AuthRoutes);
+app.use('/api/v1/users', AuthRoutes);
 app.use('/api/v1/tutors', TutorRoutes);
 app.use('/api/v1/tuition-jobs', TuitionRoutes);
 app.use('/api/v1/applications', ApplicationRoutes);
@@ -59,6 +61,7 @@ app.use('/api/v1/upload', UploadRoutes);
 app.use('/api/v1/admin', AdminRoutes);
 app.use('/api/v1/coaching', CoachingRoutes);
 app.use('/api/v1/enrollments', EnrollmentRoutes);
+app.use('/api/v1/services', ITServiceRoutes);
 
 // Global 404 Handler
 app.use((_req: Request, res: Response) => {

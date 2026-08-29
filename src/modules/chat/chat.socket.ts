@@ -80,7 +80,10 @@ export const initializeChatSocket = (io: Server) => {
 
           const roomName = `conversation:${data.conversationId}`;
           io.to(roomName).emit(SOCKET_EVENTS.RECEIVE_MESSAGE, savedMessage);
+          io.to(roomName).emit('receive_message', savedMessage);
           io.to(`user:${data.receiverId}`).emit(SOCKET_EVENTS.RECEIVE_MESSAGE, savedMessage);
+          io.to(`user:${data.receiverId}`).emit('receive_message', savedMessage);
+          io.to(`user:${data.receiverId}`).emit('new_message_notification', savedMessage);
         } catch (err: unknown) {
           socket.emit('error', {
             message: err instanceof Error ? err.message : 'Failed to send message',

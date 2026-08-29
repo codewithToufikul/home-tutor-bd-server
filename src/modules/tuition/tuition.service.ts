@@ -1,4 +1,7 @@
+import mongoose from 'mongoose';
 import { AppError } from '../../errors/AppError.js';
+import { addMatchingJob } from '../../jobs/matching.queue.js';
+import { RuleBasedMatcher } from '../../services/matching.service.js';
 import {
   buildCursorMatchStage,
   buildNextCursor,
@@ -11,16 +14,23 @@ import {
 } from '../../utils/pagination.js';
 import { Application } from '../application/application.model.js';
 import { NotificationService } from '../notification/notification.service.js';
+import { Tutor } from '../tutor/tutor.model.js';
 import { User } from '../user/user.model.js';
 import type { ITuitionJob } from './tuition.interface.js';
 import { TuitionJob } from './tuition.model.js';
 
 interface ITuitionSearchQuery extends Record<string, string | undefined> {
+  search?: string;
+  jobId?: string;
   district?: string;
   area?: string;
   subject?: string;
+  category?: string;
   medium?: string;
   studentClass?: string;
+  tuitionType?: string;
+  gender?: string;
+  genderPreference?: string;
   minSalary?: string;
   maxSalary?: string;
   status?: string;
@@ -32,6 +42,108 @@ interface ITuitionSearchQuery extends Record<string, string | undefined> {
   cursor?: string;
 }
 
+const DISTRICT_CODE_MAP: Record<string, string> = {
+  dhaka: 'DHA',
+  chattogram: 'CTG',
+  chittagong: 'CTG',
+  sylhet: 'SYL',
+  rajshahi: 'RAJ',
+  khulna: 'KHU',
+  barishal: 'BAR',
+  barisal: 'BAR',
+  rangpur: 'RAN',
+  mymensingh: 'MYM',
+  cumilla: 'COM',
+  comilla: 'COM',
+  gazipur: 'GAZ',
+  narayanganj: 'NAR',
+  bogura: 'BOG',
+  bogra: 'BOG',
+  "cox's bazar": 'COX',
+  coxsbazar: 'COX',
+  dinajpur: 'DIN',
+  feni: 'FEN',
+  jessore: 'JAS',
+  jashore: 'JAS',
+  kushtia: 'KUS',
+  noakhali: 'NOA',
+  pabna: 'PAB',
+  tangail: 'TAN',
+  faridpur: 'FAR',
+  kishoreganj: 'KIS',
+  manikganj: 'MAN',
+  munshiganj: 'MUN',
+  narsingdi: 'NSD',
+  gopalganj: 'GOP',
+  shariatpur: 'SHA',
+  madaripur: 'MAD',
+  rajbari: 'RJB',
+  brahmanbaria: 'BRA',
+  chandpur: 'CHA',
+  lakshmipur: 'LAK',
+  habiganj: 'HAB',
+  moulvibazar: 'MOU',
+  sunamganj: 'SUN',
+  natore: 'NAT',
+  naogaon: 'NAO',
+  chapainawabganj: 'NWB',
+  joypurhat: 'JOY',
+  sirajganj: 'SIR',
+  bagerhat: 'BAG',
+  chuadanga: 'CHU',
+  jhenaidah: 'JHE',
+  magura: 'MAG',
+  meherpur: 'MEH',
+  narail: 'NRL',
+  satkhira: 'SAT',
+  bhola: 'BHO',
+  jhalokati: 'JHA',
+  patuakhali: 'PAT',
+  pirojpur: 'PIR',
+  barguna: 'BRG',
+  kurigram: 'KUR',
+  gaibandha: 'GAI',
+  lalmonirhat: 'LAL',
+  nilphamari: 'NIL',
+  panchagarh: 'PAN',
+  thakurgaon: 'THA',
+  jamalpur: 'JAM',
+  netrokona: 'NET',
+  sherpur: 'SHE',
+};
+
+export const generateTuitionCustomId = async (district: string): Promise<string> => {
+  const cleanDistrict = (district || 'Dhaka').trim().toLowerCase();
+  const prefix = DISTRICT_CODE_MAP[cleanDistrict] || cleanDistrict.replace(/[^a-z]/gi, '').slice(0, 3).toUpperCase() || 'DHA';
+
+  // Count existing records with this prefix to get sequential number
+  const regex = new RegExp(`^${prefix}-(\\d+)$`, 'i');
+  const latestWithPrefix = await TuitionJob.findOne({ customId: regex })
+    .sort({ createdAt: -1, _id: -1 })
+    .select('customId');
+
+  let nextNum = 1;
+  if (latestWithPrefix && latestWithPrefix.customId) {
+    const match = latestWithPrefix.customId.match(regex);
+    if (match && match[1]) {
+      nextNum = parseInt(match[1], 10) + 1;
+    }
+  } else {
+    const count = await TuitionJob.countDocuments({ customId: new RegExp(`^${prefix}-`, 'i') });
+    nextNum = count + 1;
+  }
+
+  let customId = `${prefix}-${String(nextNum).padStart(3, '0')}`;
+  let attempt = 0;
+  while (await TuitionJob.exists({ customId }) && attempt < 100) {
+    nextNum++;
+    customId = `${prefix}-${String(nextNum).padStart(3, '0')}`;
+    attempt++;
+  }
+
+  return customId;
+};
+
 const buildFilterMatch = (query: ITuitionSearchQuery): Record<string, unknown> => {
   const match: Record<string, unknown> = {
     // 'all' = no approvalStatus filter (admin view); default is 'Approved' for public
@@ -40,14 +152,54 @@ const buildFilterMatch = (query: ITuitionSearchQuery): Record<string, unknown> =
       : query['approvalStatus'] === 'all'
         ? {}
         : { approvalStatus: 'Approved' }),
-    status: query.status || 'Open',
+    ...(query.status && query.status !== 'all'
+      ? { status: query.status }
+      : {}),
   };
 
-  if (query.district) match['location.district'] = { $regex: query.district, $options: 'i' };
-  if (query.area) match['location.area'] = { $regex: query.area, $options: 'i' };
-  if (query.subject) match['subjects'] = { $in: [query.subject] };
-  if (query.medium) match['medium'] = query.medium;
-  if (query.studentClass) match['studentClass'] = { $regex: query.studentClass, $options: 'i' };
+  // Search by Custom ID (e.g. DHA-001), MongoDB _id or general keyword
+  const searchVal = (query.search || query.jobId || '').trim();
+  if (searchVal) {
+    if (mongoose.isValidObjectId(searchVal)) {
+      match['$or'] = [
+        { _id: new mongoose.Types.ObjectId(searchVal) },
+        { customId: { $regex: searchVal, $options: 'i' } },
+      ];
+    } else {
+      match['$or'] = [
+        { customId: { $regex: searchVal, $options: 'i' } },
+        { 'location.district': { $regex: searchVal, $options: 'i' } },
+        { 'location.area': { $regex: searchVal, $options: 'i' } },
+        { subjects: { $elemMatch: { $regex: searchVal, $options: 'i' } } },
+        { studentClass: { $regex: searchVal, $options: 'i' } },
+        { medium: { $regex: searchVal, $options: 'i' } },
+      ];
+    }
+  }
+
+  if (query.district && query.district !== 'All') {
+    match['location.district'] = { $regex: query.district, $options: 'i' };
+  }
+  if (query.area && query.area !== 'All') {
+    match['location.area'] = { $regex: query.area, $options: 'i' };
+  }
+  const sub = query.subject || query.category;
+  if (sub && sub !== 'All') {
+    match['subjects'] = { $elemMatch: { $regex: sub, $options: 'i' } };
+  }
+  if (query.medium && query.medium !== 'All') {
+    match['medium'] = { $regex: query.medium, $options: 'i' };
+  }
+  if (query.studentClass && query.studentClass !== 'All') {
+    match['studentClass'] = { $regex: query.studentClass, $options: 'i' };
+  }
+  if (query.tuitionType && query.tuitionType !== 'All') {
+    match['tuitionType'] = { $regex: query.tuitionType, $options: 'i' };
+  }
+  const gender = query.genderPreference || query.gender;
+  if (gender && gender !== 'All' && gender !== 'Any') {
+    match['genderPreference'] = { $in: [new RegExp(gender, 'i'), 'Any'] };
+  }
 
   if (query.minSalary || query.maxSalary) {
     const salaryFilter: Record<string, number> = {};
@@ -61,7 +213,7 @@ const buildFilterMatch = (query: ITuitionSearchQuery): Record<string, unknown> =
 
 const getAllJobs = async (query: ITuitionSearchQuery) => {
   const limitNum = Math.min(50, Math.max(1, parseInt(query.limit ?? '20', 10)));
-  const sortMode = resolveSortMode(query.sortBy, query.sortOrder);
+  const sortMode = resolveSortMode(query.sortBy || 'createdAt', query.sortOrder || 'desc');
   const sortStage = buildSortStage(sortMode);
   const filterMatch = buildFilterMatch(query);
 
@@ -71,7 +223,28 @@ const getAllJobs = async (query: ITuitionSearchQuery) => {
       localField: 'postedBy',
       foreignField: '_id',
       as: 'postedByUser',
-      pipeline: [{ $project: { name: 1, phone: 1, avatar: 1 } }],
+      pipeline: [{ $project: { name: 1, phone: 1, avatar: 1, email: 1, role: 1 } }],
+    },
+  };
+
+  const applicationsLookup = {
+    $lookup: {
+      from: 'applications',
+      localField: '_id',
+      foreignField: 'jobId',
+      as: 'applications',
+      pipeline: [
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'tutorId',
+            foreignField: '_id',
+            as: 'tutor',
+            pipeline: [{ $project: { name: 1, phone: 1, avatar: 1, email: 1 } }],
+          },
+        },
+        { $unwind: { path: '$tutor', preserveNullAndEmptyArrays: true } },
+      ],
     },
   };
 
@@ -85,6 +258,7 @@ const getAllJobs = async (query: ITuitionSearchQuery) => {
       { $match: filterMatch },
       userLookup,
       { $unwind: { path: '$postedByUser', preserveNullAndEmptyArrays: true } },
+      applicationsLookup,
       { $match: cursorMatch },
       { $sort: sortStage },
       { $limit: limitNum + 1 },
@@ -115,6 +289,7 @@ const getAllJobs = async (query: ITuitionSearchQuery) => {
     { $match: filterMatch },
     userLookup,
     { $unwind: { path: '$postedByUser', preserveNullAndEmptyArrays: true } },
+    applicationsLookup,
     { $sort: sortStage },
     {
       $facet: {
@@ -142,30 +317,121 @@ const getAllJobs = async (query: ITuitionSearchQuery) => {
 };
 
 const getJobById = async (id: string) => {
-  const job = await TuitionJob.findById(id).populate('postedBy', 'name email phone avatar');
+  let query: Record<string, unknown> = {};
+  if (mongoose.isValidObjectId(id)) {
+    query = { $or: [{ _id: new mongoose.Types.ObjectId(id) }, { customId: id.toUpperCase() }] };
+  } else {
+    query = { customId: id.toUpperCase() };
+  }
+
+  const job = await TuitionJob.findOne(query).populate('postedBy', 'name email phone avatar');
   if (!job) throw new AppError(404, 'Tuition job not found!');
   return job;
 };
 
-const createJob = async (postedBy: string, payload: Partial<ITuitionJob>) => {
-  const job = await TuitionJob.create({ ...payload, postedBy, status: 'Open', approvalStatus: 'Pending' });
+const createJob = async (
+  postedBy?: string,
+  payload: Partial<ITuitionJob> & { phone?: string; name?: string; location?: any } = {},
+) => {
+  let finalPostedBy = postedBy;
 
-  // Send notification to all admins about new tuition job pending approval
+  if (!finalPostedBy) {
+    if (payload.phone) {
+      let existingUser = await User.findOne({ phone: payload.phone });
+      if (!existingUser) {
+        const cleanPhone = payload.phone.replace(/[^0-9]/g, '');
+        const randomPass = `Guest@${cleanPhone || '1234'}`;
+        existingUser = await User.create({
+          name: payload.name || `Guardian (${cleanPhone.slice(-4) || 'Guest'})`,
+          phone: payload.phone,
+          email: `guardian_${cleanPhone || Date.now()}@hometutorbd.com`,
+          password: randomPass,
+          role: 'guardian',
+          isEmailVerified: false,
+          isPhoneVerified: true,
+          isApproved: true,
+          status: 'active',
+        });
+      }
+      finalPostedBy = String(existingUser._id);
+    } else {
+      const adminUser = await User.findOne({ role: { $in: ['super_admin', 'admin'] } });
+      if (adminUser) {
+        finalPostedBy = String(adminUser._id);
+      }
+    }
+  }
+
+  if (!finalPostedBy) {
+    throw new AppError(400, 'Could not determine user account for this tutor request.');
+  }
+
+  // Normalize location
+  let location = { district: 'Dhaka', area: 'All Areas' };
+  if (typeof payload.location === 'object' && payload.location !== null) {
+    location = {
+      district: payload.location.district || 'Dhaka',
+      area: payload.location.area || 'All Areas',
+    };
+  } else if (typeof payload.location === 'string') {
+    location = {
+      district: payload.location || 'Dhaka',
+      area: (payload as any).area || 'All Areas',
+    };
+  }
+
+  // Normalize salary
+  const salary = typeof payload.salary === 'number' && !isNaN(payload.salary)
+    ? payload.salary
+    : parseInt(String(payload.salary || 5000), 10) || 5000;
+
+  // Normalize subjects
+  const subjects = Array.isArray(payload.subjects) && payload.subjects.length > 0
+    ? payload.subjects
+    : ['All Subjects'];
+
+  // Generate customized Tuition ID (e.g. DHA-001, CTG-001, RAJ-001)
+  const customId = payload.customId || (await generateTuitionCustomId(location.district));
+
+  const job = await TuitionJob.create({
+    ...payload,
+    customId,
+    postedBy: finalPostedBy,
+    location,
+    salary,
+    subjects,
+    studentClass: payload.studentClass || 'Class 10',
+    medium: payload.medium || 'Bangla Medium',
+    status: 'Open',
+    approvalStatus: 'Approved',
+  });
+
+  // Trigger background Auto Matching worker!
   try {
-    const adminUsers = await User.find({ role: 'admin' });
-    const poster = await User.findById(postedBy);
-    for (const admin of adminUsers) {
+    addMatchingJob({
+      jobId: String(job._id),
+      triggeredBy: 'job_created',
+    });
+  } catch (err) {
+    console.warn('⚠️ Auto matching queue error (non-fatal):', err);
+  }
+
+  // Send notification to all staff (Super Admin, Admin, Moderator) about new tuition job
+  try {
+    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } });
+    const poster = await User.findById(finalPostedBy);
+    for (const staff of staffUsers) {
       await NotificationService.createNotification({
-        userId: String(admin._id),
+        userId: String(staff._id),
         type: 'tuition_job',
-        title: 'নতুন টিউশন জব পেন্ডিং অ্যাপ্রুভাল',
-        message: `${poster?.name || 'একজন গার্ডিয়ান/স্টুডেন্ট'} একটি নতুন টিউশন জব পোস্ট করেছেন। অ্যাপ্রুভ করুন।`,
+        title: `New Tuition Job [${job.customId}]`,
+        message: `${poster?.name || 'A user'} posted tuition job #${job.customId} for ${job.studentClass} (${location.area}, ${location.district} - ৳${salary})`,
         referenceId: String(job._id),
         referenceType: 'TuitionJob',
       });
     }
   } catch (notifErr) {
-    console.warn('⚠️ Admin notification error (non-fatal):', notifErr);
+    console.warn('⚠️ Staff notification error on job creation (non-fatal):', notifErr);
   }
 
   return job;
@@ -177,7 +443,24 @@ const updateJob = async (id: string, userId: string, userRole: string, payload: 
   if (userRole !== 'admin' && String(job.postedBy) !== userId) {
     throw new AppError(403, 'You are not authorized to update this job!');
   }
-  return await TuitionJob.findByIdAndUpdate(id, { $set: payload }, { new: true });
+  const updatedJob = await TuitionJob.findByIdAndUpdate(id, { $set: payload }, { new: true });
+
+  // Re-run matching if core criteria modified
+  if (
+    payload.subjects ||
+    payload.location ||
+    payload.salary ||
+    payload.medium ||
+    payload.studentClass ||
+    payload.genderPreference
+  ) {
+    addMatchingJob({
+      jobId: id,
+      triggeredBy: 'manual_rematch',
+    });
+  }
+
+  return updatedJob;
 };
 
 const deleteJob = async (id: string, userId: string, userRole: string) => {
@@ -190,23 +473,53 @@ const deleteJob = async (id: string, userId: string, userRole: string) => {
   return { message: 'Tuition job deleted successfully.' };
 };
 
-const applyToJob = async (jobId: string, tutorId: string, expectedSalary?: number) => {
+const applyToJob = async (
+  jobId: string,
+  tutorUserId: string,
+  payload: {
+    expectedSalary?: number;
+    coverLetter?: string;
+    availableTime?: string[];
+  } = {},
+) => {
   const job = await TuitionJob.findById(jobId);
   if (!job) throw new AppError(404, 'Tuition job not found!');
   if (job.status !== 'Open') throw new AppError(400, 'This job is no longer open!');
 
-  const existing = await Application.findOne({ jobId, tutorId });
+  const existing = await Application.findOne({ jobId, tutorId: tutorUserId });
   if (existing) throw new AppError(400, 'You have already applied for this job!');
+
+  // Calculate Match Score for this tutor
+  let matchScore = 0;
+  let isAutoShortlisted = false;
+
+  const tutorProfile = await Tutor.findOne({ userId: tutorUserId });
+  if (tutorProfile) {
+    const matcher = new RuleBasedMatcher();
+    const matchResult = await matcher.calculate(job.toObject(), tutorProfile.toObject());
+    matchScore = matchResult.score;
+
+    // Check if tutor was already in job's shortlistedTutors list
+    if (job.shortlistedTutors && job.shortlistedTutors.length > 0) {
+      isAutoShortlisted = job.shortlistedTutors.some(
+        (st) => String(st.tutorId) === String(tutorProfile._id),
+      );
+    }
+  }
 
   const application = await Application.create({
     jobId,
-    tutorId,
-    expectedSalary: expectedSalary ?? job.salary,
+    tutorId: tutorUserId,
+    expectedSalary: payload.expectedSalary ?? job.salary,
+    coverLetter: payload.coverLetter || '',
+    availableTime: payload.availableTime || [],
+    matchScore,
+    isAutoShortlisted,
     status: 'Pending',
   });
 
   // Notify guardian who posted the job
-  const tutorUser = await User.findById(tutorId);
+  const tutorUser = await User.findById(tutorUserId);
   const tutorName = tutorUser?.name || 'একজন টিউটর';
 
   await NotificationService.createNotification({
@@ -218,12 +531,12 @@ const applyToJob = async (jobId: string, tutorId: string, expectedSalary?: numbe
     referenceType: 'TuitionJob',
   });
 
-  // Notify all admins about the new tutor application
+  // Notify all staff (Super Admin, Admin, Moderator)
   try {
-    const adminUsers = await User.find({ role: 'admin' });
-    for (const admin of adminUsers) {
+    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } });
+    for (const staff of staffUsers) {
       await NotificationService.createNotification({
-        userId: String(admin._id),
+        userId: String(staff._id),
         type: 'application',
         title: 'টিউশন জব আবেদন জমা হয়েছে',
         message: `${tutorName} (${tutorUser?.email || ''}) একটি টিউশন জবে (${job.medium} - ৳${job.salary}) আবেদন করেছেন।`,
@@ -232,10 +545,114 @@ const applyToJob = async (jobId: string, tutorId: string, expectedSalary?: numbe
       });
     }
   } catch (err) {
-    console.warn('⚠️ Admin notification error on job application:', err);
+    console.warn('⚠️ Staff notification error on job application:', err);
   }
 
   return application;
+};
+
+const getShortlistedTutors = async (jobId: string, userId: string, userRole: string) => {
+  let job = await TuitionJob.findById(jobId).populate({
+    path: 'shortlistedTutors.tutorId',
+    populate: { path: 'userId', select: 'name email phone avatar status' },
+  });
+
+  if (!job) throw new AppError(404, 'Tuition job not found!');
+
+  if (userRole !== 'admin' && String(job.postedBy) !== userId) {
+    throw new AppError(403, 'You are not authorized to view shortlisted tutors for this job.');
+  }
+
+  // If shortlist is empty, run matching engine on the fly immediately!
+  if (!job.shortlistedTutors || job.shortlistedTutors.length === 0) {
+    try {
+      const blockedUserIds = await User.find({ status: 'blocked' }).distinct('_id');
+      const tutors = await Tutor.find({
+        userId: { $nin: blockedUserIds },
+      }).lean();
+
+      if (tutors.length > 0) {
+        const { MatchingEngine } = await import('../../services/matching.service.js');
+        const topMatches = await MatchingEngine.run(job.toObject(), tutors as any, 5);
+
+        if (topMatches.length > 0) {
+          const newShortlist = topMatches.map((match) => ({
+            tutorId: new mongoose.Types.ObjectId(match.tutorId),
+            score: match.score,
+            matchDetails: match.matchDetails,
+            shortlistedAt: new Date(),
+          }));
+
+          await TuitionJob.findByIdAndUpdate(jobId, {
+            shortlistedTutors: newShortlist,
+            matchingRunAt: new Date(),
+          });
+
+          // Reload populated job
+          const reloaded = await TuitionJob.findById(jobId).populate({
+            path: 'shortlistedTutors.tutorId',
+            populate: { path: 'userId', select: 'name email phone avatar status' },
+          });
+          if (reloaded) {
+            job = reloaded;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('⚠️ On-demand matching calculation error:', err);
+    }
+  }
+
+  // Privacy Protection: Mask sensitive contact/personal details (name, photo, phone, email) before confirmation
+  const sanitizedShortlist = (job.shortlistedTutors || []).map((st: any) => {
+    const rawObj = st.toObject ? st.toObject() : st;
+    const tutorDoc = rawObj.tutorId || {};
+    const userDoc = tutorDoc.userId || {};
+
+    if (userRole !== 'admin') {
+      const tutorAnonId = String(userDoc._id || tutorDoc._id || 'TUTOR').slice(-4).toUpperCase();
+      return {
+        ...rawObj,
+        tutorId: {
+          ...tutorDoc,
+          nid: undefined,
+          cv: undefined,
+          certificates: undefined,
+          userId: {
+            _id: userDoc._id,
+            name: `Candidate Tutor #${tutorAnonId}`,
+            avatar: '', // Masked until confirmed
+            phone: '🔒 টিউশন নিশ্চিত করার পর দৃশ্যমান হবে',
+            email: '🔒 Hidden',
+            status: userDoc.status,
+          },
+        },
+      };
+    }
+    return rawObj;
+  });
+
+  return {
+    jobId: job._id,
+    matchingRunAt: job.matchingRunAt,
+    shortlistedTutors: sanitizedShortlist,
+  };
+};
+
+const rematchJob = async (jobId: string, userId: string, userRole: string) => {
+  const job = await TuitionJob.findById(jobId);
+  if (!job) throw new AppError(404, 'Tuition job not found!');
+
+  if (userRole !== 'admin' && String(job.postedBy) !== userId) {
+    throw new AppError(403, 'You are not authorized to re-run matching for this job.');
+  }
+
+  await addMatchingJob({
+    jobId,
+    triggeredBy: 'manual_rematch',
+  });
+
+  return { message: 'Auto Matching triggered in background. Shortlist will update momentarily.' };
 };
 
 export const TuitionService = {
@@ -245,4 +662,6 @@ export const TuitionService = {
   updateJob,
   deleteJob,
   applyToJob,
+  getShortlistedTutors,
+  rematchJob,
 };

@@ -8,6 +8,7 @@ import { initializeChatSocket } from './modules/chat/chat.socket.js';
 import './jobs/email.worker.js';
 import './jobs/notification.worker.js';
 import './jobs/payment.worker.js';
+import './jobs/matching.worker.js';
 
 dotenv.config();
 

@@ -8,6 +8,7 @@ export type NotificationType =
   | 'user_registration'
   | 'tutor_verification'
   | 'payment'
+  | 'auto_match'
   | 'system';
 
 export interface INotification {

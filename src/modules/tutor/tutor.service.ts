@@ -15,10 +15,12 @@ import type { ITutor } from './tutor.interface.js';
 import { Tutor } from './tutor.model.js';
 
 interface ITutorSearchQuery extends Record<string, string | undefined> {
+  search?: string;
   subject?: string;
   district?: string;
   area?: string;
   medium?: string;
+  studentClass?: string;
   gender?: string;
   minSalary?: string;
   maxSalary?: string;
@@ -34,12 +36,35 @@ interface ITutorSearchQuery extends Record<string, string | undefined> {
 const buildFilterMatch = (query: ITutorSearchQuery): Record<string, unknown> => {
   const match: Record<string, unknown> = {};
 
-  if (query.subject) match['subjects'] = { $in: [query.subject] };
-  if (query.district) match['location.district'] = { $regex: query.district, $options: 'i' };
-  if (query.area) match['location.area'] = { $regex: query.area, $options: 'i' };
-  if (query.medium) match['mediums'] = { $in: [query.medium] };
+  if (query.search && query.search.trim()) {
+    const s = query.search.trim();
+    match['$or'] = [
+      { university: { $regex: s, $options: 'i' } },
+      { department: { $regex: s, $options: 'i' } },
+      { qualification: { $regex: s, $options: 'i' } },
+      { 'location.district': { $regex: s, $options: 'i' } },
+      { 'location.area': { $regex: s, $options: 'i' } },
+      { subjects: { $elemMatch: { $regex: s, $options: 'i' } } },
+    ];
+  }
+
+  if (query.subject && query.subject !== 'All') {
+    match['subjects'] = { $elemMatch: { $regex: query.subject, $options: 'i' } };
+  }
+  if (query.district && query.district !== 'All') {
+    match['location.district'] = { $regex: query.district, $options: 'i' };
+  }
+  if (query.area && query.area !== 'All') {
+    match['location.area'] = { $regex: query.area, $options: 'i' };
+  }
+  if (query.medium && query.medium !== 'All') {
+    match['mediums'] = { $elemMatch: { $regex: query.medium, $options: 'i' } };
+  }
+  if (query.studentClass && query.studentClass !== 'All') {
+    match['preferredClasses'] = { $elemMatch: { $regex: query.studentClass, $options: 'i' } };
+  }
   if (query.gender && query.gender !== 'Any' && query.gender !== 'All') {
-    match['gender'] = query.gender;
+    match['gender'] = { $regex: query.gender, $options: 'i' };
   }
   if (query.isVerified === 'true') match['isVerified'] = true;
   if (query.isPremium === 'true') match['isPremium'] = true;

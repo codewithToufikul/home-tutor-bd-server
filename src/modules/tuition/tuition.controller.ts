@@ -20,7 +20,7 @@ const getJobById = async (req: Request, res: Response) => {
 };
 
 const createJob = async (req: CustomRequest, res: Response) => {
-  const result = await TuitionService.createJob(req.user!.userId, req.body);
+  const result = await TuitionService.createJob(req.user?.userId, req.body);
   sendResponse(res, { statusCode: 201, success: true, message: 'Tuition job posted.', data: result });
 };
 
@@ -47,9 +47,27 @@ const applyToJob = async (req: CustomRequest, res: Response) => {
   const result = await TuitionService.applyToJob(
     String(req.params['id']),
     req.user!.userId,
-    req.body.expectedSalary,
+    req.body,
   );
   sendResponse(res, { statusCode: 201, success: true, message: 'Application submitted.', data: result });
+};
+
+const getShortlistedTutors = async (req: CustomRequest, res: Response) => {
+  const result = await TuitionService.getShortlistedTutors(
+    String(req.params['id']),
+    req.user!.userId,
+    req.user!.role,
+  );
+  sendResponse(res, { statusCode: 200, success: true, message: 'Shortlisted tutors retrieved.', data: result });
+};
+
+const rematchJob = async (req: CustomRequest, res: Response) => {
+  const result = await TuitionService.rematchJob(
+    String(req.params['id']),
+    req.user!.userId,
+    req.user!.role,
+  );
+  sendResponse(res, { statusCode: 200, success: true, message: result.message, data: null });
 };
 
 export const TuitionController = {
@@ -59,4 +77,6 @@ export const TuitionController = {
   updateJob,
   deleteJob,
   applyToJob,
+  getShortlistedTutors,
+  rematchJob,
 };

@@ -4,6 +4,8 @@ export interface IRegisterUser {
   name: string;
   email: string;
   phone?: string;
+  location?: string;
+  gender?: string;
   password: string;
   role: TRole;
 }
@@ -24,8 +26,10 @@ export interface IAuthResponse {
   user: {
     _id: string;
     name: string;
+    username?: string;
     email: string;
     role: string;
+    permissions?: string[];
     avatar?: string;
     isEmailVerified: boolean;
     isApproved: boolean;

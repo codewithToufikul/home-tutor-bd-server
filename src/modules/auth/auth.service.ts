@@ -22,34 +22,47 @@ const registerUser = async (payload: IRegisterUser) => {
     password: payload.password,
     role: payload.role,
     isEmailVerified: false,
-    // Admin, Student, Guardian auto-approved. Tutor & Coaching require admin approval.
-    isApproved: payload.role === 'admin' || payload.role === 'student' || payload.role === 'guardian',
+    // ONLY Coaching Center requires admin approval (isApproved: false).
+    // Tutors, Students, Guardians are automatically approved (isApproved: true).
+    isApproved: payload.role !== 'coaching',
   });
 
   if (payload.role === 'tutor') {
     await Tutor.create({
       userId: user._id,
+      location: { district: payload.location || 'Dhaka', area: 'All Areas' },
+      isVerified: true,
     });
   }
 
-  // Real-time notification to Admin for new Tutor / Coaching registrations
-  if (payload.role === 'tutor' || payload.role === 'coaching') {
-    try {
-      const adminUsers = await User.find({ role: 'admin' });
-      const roleLabel = payload.role === 'tutor' ? 'টিউটর' : 'কোচিং সেন্টার';
-      for (const admin of adminUsers) {
+  // Real-time notification to all Staff (Super Admin, Admin, Moderator)
+  try {
+    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } });
+    if (payload.role === 'coaching') {
+      for (const staff of staffUsers) {
         await NotificationService.createNotification({
-          userId: String(admin._id),
+          userId: String(staff._id),
           type: 'tutor_verification',
-          title: `👨‍🏫 নতুন ${roleLabel} রেজিস্ট্রেশন`,
-          message: `নতুন ${roleLabel} "${user.name || user.email}" অ্যাকাউন্ট খুলেছেন। অনুমোদনের জন্য আবেদন প্রক্রিয়াভুক্ত।`,
+          title: '🏢 নতুন কোচিং সেন্টার রেজিস্ট্রেশন (অনুমোদনের জন্য অপেক্ষমাণ)',
+          message: `নতুন কোচিং সেন্টার "${user.name || user.email}" অ্যাকাউন্ট খুলেছেন। ড্যাশবোর্ড ব্যবহারের জন্য অ্যাডমিন অনুমোদনের প্রয়োজন।`,
           referenceId: String(user._id),
-          referenceType: payload.role === 'tutor' ? 'Tutor' : 'Coaching',
+          referenceType: 'Coaching',
         });
       }
-    } catch (err) {
-      console.warn('⚠️ Admin registration notification error:', err);
+    } else if (payload.role === 'tutor') {
+      for (const staff of staffUsers) {
+        await NotificationService.createNotification({
+          userId: String(staff._id),
+          type: 'tutor_verification',
+          title: '👨‍🏫 নতুন টিউটর রেজিস্ট্রেশন সম্পন্ন',
+          message: `নতুন টিউটর "${user.name || user.email}" সফলভাবে প্ল্যাটফর্মে রেজিস্ট্রেশন সম্পন্ন করেছেন।`,
+          referenceId: String(user._id),
+          referenceType: 'Tutor',
+        });
+      }
     }
+  } catch (err) {
+    console.warn('⚠️ Staff registration notification error:', err);
   }
 
   const otp = generateOTP(user.email);
@@ -75,9 +88,19 @@ const verifyEmailOTP = async (payload: IVerifyOTP) => {
     throw new AppError(400, 'Invalid or expired OTP!');
   }
 
+  const existingUser = await User.findOne({ email: payload.email });
+  if (!existingUser) {
+    throw new AppError(404, 'User not found!');
+  }
+
+  // Keep isApproved: false for coaching centers until approved by admin.
+  // Everyone else is auto-approved.
+  const isCoaching = existingUser.role === 'coaching';
+  const shouldApprove = !isCoaching ? true : existingUser.isApproved;
+
   const user = await User.findOneAndUpdate(
     { email: payload.email },
-    { isEmailVerified: true },
+    { isEmailVerified: true, isApproved: shouldApprove },
     { new: true },
   );
 
@@ -85,24 +108,34 @@ const verifyEmailOTP = async (payload: IVerifyOTP) => {
     throw new AppError(404, 'User not found!');
   }
 
-  // Create Admin Notification for pending user approval
-  // Only tutor & coaching require admin approval — student & guardian are auto-approved
-  if (!user.isApproved && (user.role === 'tutor' || user.role === 'coaching')) {
-    try {
-      const adminUsers = await User.find({ role: 'admin' });
-      for (const admin of adminUsers) {
+  // Create Staff Notification for verified user
+  try {
+    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } });
+    if (user.role === 'coaching') {
+      for (const staff of staffUsers) {
         await NotificationService.createNotification({
-          userId: String(admin._id),
+          userId: String(staff._id),
           type: 'user_registration',
-          title: `নতুন ${user.role.toUpperCase()} অ্যাকাউন্ট প্যানেল রেজিষ্ট্রেশন`,
-          message: `${user.name} (${user.email}) ইমেইল ভেরিফাই করেছেন এবং অ্যাকাউন্ট অ্যাপ্রুভালের জন্য অপেক্ষা করছেন।`,
+          title: '🏢 কোচিং সেন্টার ইমেইল ভেরিফিকেশন সম্পন্ন (অ্যাপ্রুভাল প্রয়োজন)',
+          message: `${user.name} (${user.email}) ইমেইল ভেরিফাই করেছেন এবং ড্যাশবোর্ড ব্যবহারের জন্য অ্যাডমিন অনুমোদনের অপেক্ষায় আছেন।`,
           referenceId: String(user._id),
           referenceType: 'User',
         });
       }
-    } catch (err) {
-      console.warn('⚠️ Admin notification creation error:', err);
+    } else if (user.role === 'tutor') {
+      for (const staff of staffUsers) {
+        await NotificationService.createNotification({
+          userId: String(staff._id),
+          type: 'user_registration',
+          title: '✅ নতুন টিউটর ইমেইল ভেরিফিকেশন সম্পন্ন',
+          message: `${user.name} (${user.email}) সফলভাবে ইমেইল ভেরিফাই করেছেন এবং অ্যাকাউন্ট সক্রিয় রয়েছে।`,
+          referenceId: String(user._id),
+          referenceType: 'User',
+        });
+      }
     }
+  } catch (err) {
+    console.warn('⚠️ Staff notification creation error:', err);
   }
 
   // Welcome email dispatched via BullMQ
@@ -141,10 +174,10 @@ const verifyEmailOTP = async (payload: IVerifyOTP) => {
 };
 
 const loginUser = async (payload: ILoginUser): Promise<IAuthResponse> => {
-  const normalizedEmail = payload.email.trim().toLowerCase();
-  const user = await User.isUserExistsByEmail(normalizedEmail);
+  const normalizedIdentifier = payload.email.trim().toLowerCase();
+  const user = await User.isUserExistsByIdentifier(normalizedIdentifier);
   if (!user) {
-    throw new AppError(400, 'Invalid email or password!');
+    throw new AppError(400, 'Invalid email/username or password!');
   }
 
   if (user.status === 'blocked') {
@@ -169,6 +202,14 @@ const loginUser = async (payload: ILoginUser): Promise<IAuthResponse> => {
     );
   }
 
+  // Check Approval: Only Coaching Center accounts require Admin Approval before accessing dashboard
+  if (user.role === 'coaching' && !user.isApproved) {
+    throw new AppError(
+      403,
+      'আপনার কোচিং সেন্টার অ্যাকাউন্টটি অ্যাডমিন অনুমোদনের অপেক্ষায় রয়েছে। অ্যাডমিন অনুমোদন প্রদান করলে আপনি ড্যাশবোর্ডে প্রবেশ করতে পারবেন।',
+    );
+  }
+
   const jwtPayload = {
     userId: String(user._id),
     email: user.email,
@@ -189,8 +230,10 @@ const loginUser = async (payload: ILoginUser): Promise<IAuthResponse> => {
     user: {
       _id: String(user._id),
       name: user.name,
+      username: user.username || '',
       email: user.email,
       role: user.role,
+      permissions: user.permissions || [],
       avatar: user.avatar || '',
       isEmailVerified: user.isEmailVerified,
       isApproved: user.isApproved,
@@ -300,12 +343,31 @@ const saveFcmToken = async (userId: string, fcmToken: string) => {
   return { success: true, message: 'FCM token registered successfully.' };
 };
 
+const updateMe = async (userId: string, payload: Record<string, unknown>) => {
+  const allowedFields = ['name', 'phone', 'avatar', 'location', 'address', 'studentClass', 'institution'];
+  const updateData: Record<string, unknown> = {};
+
+  for (const key of Object.keys(payload)) {
+    if (allowedFields.includes(key) || key.startsWith('custom')) {
+      updateData[key] = payload[key];
+    }
+  }
+
+  const updatedUser = await User.findByIdAndUpdate(userId, { $set: updateData }, { new: true, runValidators: true });
+  if (!updatedUser) {
+    throw new AppError(404, 'User profile not found');
+  }
+
+  return updatedUser;
+};
+
 export const AuthService = {
   registerUser,
   verifyEmailOTP,
   loginUser,
   refreshToken,
   getMe,
+  updateMe,
   forgotPassword,
   resetPassword,
   saveFcmToken,

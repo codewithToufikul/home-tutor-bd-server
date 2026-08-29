@@ -34,6 +34,8 @@ router.post('/forgot-password', AuthController.forgotPassword);
 router.post('/reset-password', AuthController.resetPassword);
 
 router.get('/me', auth(), AuthController.getMe);
+router.patch('/me', auth(), AuthController.updateMe);
+router.patch('/profile', auth(), AuthController.updateMe);
 router.post('/fcm-token', auth(), AuthController.saveFcmToken);
 
 export const AuthRoutes = router;

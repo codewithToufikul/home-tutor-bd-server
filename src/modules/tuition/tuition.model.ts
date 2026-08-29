@@ -14,8 +14,36 @@ const tuitionLocationSchema = new Schema(
   { _id: false },
 );
 
+/** Auto Matching Score ব্রেকডাউন Schema */
+const matchDetailsSchema = new Schema(
+  {
+    subjectScore: { type: Number, default: 0 },
+    locationScore: { type: Number, default: 0 },
+    mediumScore: { type: Number, default: 0 },
+    classScore: { type: Number, default: 0 },
+    salaryScore: { type: Number, default: 0 },
+    genderScore: { type: Number, default: 0 },
+    qualificationScore: { type: Number, default: 0 },
+    bonusScore: { type: Number, default: 0 },
+    totalScore: { type: Number, default: 0 },
+  },
+  { _id: false },
+);
+
+/** Shortlisted Tutor entry Schema */
+const shortlistedTutorSchema = new Schema(
+  {
+    tutorId: { type: Schema.Types.ObjectId, ref: 'Tutor', required: true },
+    score: { type: Number, required: true },
+    matchDetails: { type: matchDetailsSchema, required: true },
+    shortlistedAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
 const tuitionJobSchema = new Schema<ITuitionJob, TuitionJobModel>(
   {
+    customId: { type: String, trim: true, uppercase: true, unique: true, sparse: true },
     postedBy: {
       type: Schema.Types.ObjectId,
       ref: 'User',
@@ -37,6 +65,18 @@ const tuitionJobSchema = new Schema<ITuitionJob, TuitionJobModel>(
     tutoringDays: { type: [String], default: [] },
     numStudents: { type: Number, default: 1 },
     requirements: { type: [String], default: [] },
+
+    // ─── Auto Matching ────────────────────────────────────────────────────────
+    preferredTime: { type: [String], default: [] },
+    tutorQualification: { type: String, trim: true, default: '' },
+    tutorExperienceMin: { type: Number, default: 0 },
+    tuitionType: { type: String, trim: true, default: 'Home' },
+    description: { type: String, trim: true, default: '' },
+    /** Top 5 Auto-Matched Tutors — System-generated */
+    shortlistedTutors: { type: [shortlistedTutorSchema], default: [] },
+    /** শেষবার Matching Engine কখন চলেছে */
+    matchingRunAt: { type: Date, default: null },
+
     status: {
       type: String,
       enum: { values: TUITION_JOB_STATUSES, message: '{VALUE} is not a valid status' },
@@ -52,6 +92,7 @@ const tuitionJobSchema = new Schema<ITuitionJob, TuitionJobModel>(
 );
 
 // ─── Indexes ───────────────────────────────────────────────────────────────
+tuitionJobSchema.index({ customId: 1 });
 tuitionJobSchema.index({ 'location.district': 1 });
 tuitionJobSchema.index({ 'location.area': 1 });
 tuitionJobSchema.index({ subjects: 1 });
@@ -66,4 +107,9 @@ tuitionJobSchema.index({ approvalStatus: 1, status: 1, 'location.district': 1 })
 tuitionJobSchema.index({ approvalStatus: 1, subjects: 1 });
 tuitionJobSchema.index({ postedBy: 1, status: 1 });
 
+// Auto Matching indexes
+tuitionJobSchema.index({ 'shortlistedTutors.tutorId': 1 });
+tuitionJobSchema.index({ matchingRunAt: 1 });
+
 export const TuitionJob = model<ITuitionJob, TuitionJobModel>('TuitionJob', tuitionJobSchema);
+

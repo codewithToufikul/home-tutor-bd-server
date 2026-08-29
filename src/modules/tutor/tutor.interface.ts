@@ -18,6 +18,7 @@ export interface ITutor {
   subjects: string[];
   preferredAreas: string[];
   mediums: string[];
+  preferredClasses?: string[];
   salary?: number;
   gender?: TGender;
   location?: ITutorLocation;
