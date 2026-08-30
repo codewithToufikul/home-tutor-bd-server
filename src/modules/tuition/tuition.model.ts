@@ -92,7 +92,6 @@ const tuitionJobSchema = new Schema<ITuitionJob, TuitionJobModel>(
 );
 
 // ─── Indexes ───────────────────────────────────────────────────────────────
-tuitionJobSchema.index({ customId: 1 });
 tuitionJobSchema.index({ 'location.district': 1 });
 tuitionJobSchema.index({ 'location.area': 1 });
 tuitionJobSchema.index({ subjects: 1 });

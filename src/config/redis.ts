@@ -1,25 +1,44 @@
 import { createClient } from 'redis';
 
-const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+const socketPath = process.env.REDIS_SOCKET_PATH;
+const redisUrl = process.env.REDIS_URL;
 
-export const redisClient = createClient({
-  url: redisUrl,
-  socket: {
-    reconnectStrategy: (retries) => {
-      if (retries > 3) {
-        // Stop reconnecting after 3 attempts in local dev if Redis server is not running
-        return false;
+/**
+ * Redis Client Configuration
+ * - cPanel: Uses Native Unix Domain Socket (`REDIS_SOCKET_PATH=/home/hometuto/.cagefs/tmp/redis.sock`)
+ * - Local / TCP: Uses `REDIS_URL` (e.g. `redis://localhost:6379`)
+ */
+export const redisClient = createClient(
+  socketPath
+    ? {
+        socket: {
+          path: socketPath,
+          reconnectStrategy: (retries: number): number | false => {
+            if (retries > 5) return false;
+            return Math.min(retries * 50, 500);
+          },
+        },
       }
-      return Math.min(retries * 50, 500);
-    },
-  },
-});
+    : {
+        ...(redisUrl ? { url: redisUrl } : {}),
+        socket: {
+          reconnectStrategy: (retries: number): number | false => {
+            if (retries > 3) return false;
+            return Math.min(retries * 50, 500);
+          },
+        },
+      },
+);
 
 let isRedisConnected = false;
 
 redisClient.on('connect', () => {
   isRedisConnected = true;
-  console.log('🔴 Redis Client Connected Successfully');
+  if (socketPath) {
+    console.log(`🔴 Redis Connected Successfully via Unix Socket (${socketPath})`);
+  } else {
+    console.log('🔴 Redis Client Connected Successfully');
+  }
 });
 
 redisClient.on('error', (err) => {
@@ -28,10 +47,16 @@ redisClient.on('error', (err) => {
 });
 
 export const connectRedis = async () => {
+  if (!socketPath && !redisUrl) {
+    console.warn('⚠️ Neither REDIS_SOCKET_PATH nor REDIS_URL is configured. Operating in database-only mode.');
+    return;
+  }
+
   try {
     await redisClient.connect();
   } catch (_err) {
-    console.warn('⚠️ Could not connect to Redis server. Operating in database-only mode (bypassing cache).');
+    isRedisConnected = false;
+    console.warn('⚠️ Could not connect to Redis. Operating in database-only fallback mode.');
   }
 };
 

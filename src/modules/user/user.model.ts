@@ -54,7 +54,6 @@ const userSchema = new Schema<IUser, UserModel>(
 );
 
 userSchema.index({ phone: 1 }, { sparse: true });
-userSchema.index({ username: 1 }, { sparse: true, unique: true });
 userSchema.index({ role: 1, status: 1 });
 
 userSchema.pre('save', async function () {

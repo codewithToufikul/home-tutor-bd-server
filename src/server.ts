@@ -1,5 +1,5 @@
+import './config/env.js'; // ⚠️ MUST be first — loads dotenv before any other module reads process.env
 import http from 'node:http';
-import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { Server } from 'socket.io';
 import app from './app.js';
@@ -9,8 +9,6 @@ import './jobs/email.worker.js';
 import './jobs/notification.worker.js';
 import './jobs/payment.worker.js';
 import './jobs/matching.worker.js';
-
-dotenv.config();
 
 const PORT = process.env.PORT || 5000;
 const DB_URL = process.env.DATABASE_URL || 'mongodb://127.0.0.1:27017/home-tutor-bd';

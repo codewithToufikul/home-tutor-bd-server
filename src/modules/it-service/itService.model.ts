@@ -85,7 +85,6 @@ const itServiceSchema = new Schema<ITServiceDocument>(
   },
 );
 
-itServiceSchema.index({ slug: 1 });
 itServiceSchema.index({ category: 1, isActive: 1 });
 
 export const ITService = model<ITServiceDocument>('ITService', itServiceSchema);

@@ -1,23 +1,26 @@
 import { Queue } from 'bullmq';
-import { redisConnectionOptions } from '../config/queue.js';
+import { redisConnectionOptions, isBullMQEnabled } from '../config/queue.js';
+import { sendOTPEmail } from '../services/email.service.js';
 
 export const QUEUE_NAMES = {
   EMAIL: 'email-queue',
   NOTIFICATION: 'notification-queue',
 } as const;
 
-export const emailQueue = new Queue(QUEUE_NAMES.EMAIL, {
-  connection: redisConnectionOptions,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 2000, // Retry after 2s, 4s, 8s if email server fails
-    },
-    removeOnComplete: 100, // Keep last 100 completed jobs for audit
-    removeOnFail: 500,
-  },
-});
+export const emailQueue = isBullMQEnabled && redisConnectionOptions
+  ? new Queue(QUEUE_NAMES.EMAIL, {
+      connection: redisConnectionOptions,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+        removeOnComplete: 100,
+        removeOnFail: 500,
+      },
+    })
+  : null;
 
 export const addEmailJob = async (
   name: 'send-email-otp' | 'send-welcome-email' | 'send-reset-password-email',
@@ -28,11 +31,33 @@ export const addEmailJob = async (
     message?: string;
   },
 ) => {
+  // ✅ Redis/BullMQ available — queue-এ job দাও (async, non-blocking)
+  if (emailQueue) {
+    try {
+      const job = await emailQueue.add(name, data);
+      console.log(`📥 [BullMQ] Email Job Added: "${name}" for ${data.email} (Job ID: ${job.id})`);
+      return job;
+    } catch (err) {
+      console.warn(`⚠️ [BullMQ] Failed to queue "${name}", falling back to direct send:`, err instanceof Error ? err.message : err);
+      // BullMQ ব্যর্থ হলেও fallback-এ যাবে (নিচে)
+    }
+  } else {
+    console.warn(`⚠️ [BullMQ] Redis not configured — direct send fallback for "${name}".`);
+  }
+
+  // 🔁 Fallback: Redis/BullMQ ছাড়াই সরাসরি email পাঠাও
   try {
-    const job = await emailQueue.add(name, data);
-    console.log(`📥 [BullMQ] Email Job Added: "${name}" for ${data.email} (Job ID: ${job.id})`);
-    return job;
+    if (name === 'send-email-otp' || name === 'send-reset-password-email') {
+      if (data.otp) {
+        await sendOTPEmail(data.email, data.otp, data.name);
+        console.log(`✅ [Direct Email] OTP email sent directly to ${data.email}`);
+      }
+    } else if (name === 'send-welcome-email') {
+      // Welcome email: Redis ছাড়া কাজ করে না এমন কিছু নেই, log করা যথেষ্ট
+      console.log(`📧 [Direct Email] Welcome email skipped for ${data.email} (BullMQ unavailable)`);
+    }
   } catch (err) {
-    console.warn(`⚠️ [BullMQ Warning] Failed to queue email job "${name}". Running fallback:`, err instanceof Error ? err.message : err);
+    console.error(`❌ [Direct Email] Failed to send "${name}" to ${data.email}:`, err instanceof Error ? err.message : err);
   }
 };
+
