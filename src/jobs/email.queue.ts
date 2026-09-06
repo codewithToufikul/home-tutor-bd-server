@@ -1,6 +1,6 @@
 import { Queue } from 'bullmq';
 import { redisConnectionOptions, isBullMQEnabled } from '../config/queue.js';
-import { sendOTPEmail } from '../services/email.service.js';
+import { sendOTPEmail, sendPasswordResetEmail } from '../services/email.service.js';
 
 export const QUEUE_NAMES = {
   EMAIL: 'email-queue',
@@ -47,10 +47,15 @@ export const addEmailJob = async (
 
   // 🔁 Fallback: Redis/BullMQ ছাড়াই সরাসরি email পাঠাও
   try {
-    if (name === 'send-email-otp' || name === 'send-reset-password-email') {
+    if (name === 'send-email-otp') {
       if (data.otp) {
         await sendOTPEmail(data.email, data.otp, data.name);
-        console.log(`✅ [Direct Email] OTP email sent directly to ${data.email}`);
+        console.log(`✅ [Direct Email] Registration OTP email sent directly to ${data.email}`);
+      }
+    } else if (name === 'send-reset-password-email') {
+      if (data.otp) {
+        await sendPasswordResetEmail(data.email, data.otp, data.name);
+        console.log(`✅ [Direct Email] Password reset OTP email sent directly to ${data.email}`);
       }
     } else if (name === 'send-welcome-email') {
       // Welcome email: Redis ছাড়া কাজ করে না এমন কিছু নেই, log করা যথেষ্ট

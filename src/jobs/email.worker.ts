@@ -1,7 +1,7 @@
 import { Worker, type Job } from 'bullmq';
 import { redisConnectionOptions, isBullMQEnabled } from '../config/queue.js';
 import { QUEUE_NAMES } from './email.queue.js';
-import { sendOTPEmail } from '../services/email.service.js';
+import { sendOTPEmail, sendPasswordResetEmail } from '../services/email.service.js';
 
 interface IEmailJobData {
   email: string;
@@ -31,7 +31,7 @@ if (!isBullMQEnabled || !redisConnectionOptions) {
 
         case 'send-reset-password-email':
           if (job.data.otp) {
-            await sendOTPEmail(job.data.email, job.data.otp, job.data.name);
+            await sendPasswordResetEmail(job.data.email, job.data.otp, job.data.name);
           }
           break;
 

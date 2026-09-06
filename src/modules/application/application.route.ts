@@ -6,6 +6,8 @@ const router = Router();
 
 router.get('/my', auth('tutor'), ApplicationController.getMyApplications);
 router.get('/job/:jobId', auth('guardian', 'student', 'admin', 'super_admin', 'moderator'), ApplicationController.getJobApplications);
+router.get('/:id/contract-deed', ApplicationController.getContractDeedHtml);
+router.get('/:id/contract-data', auth(), ApplicationController.getContractDeedData);
 router.get('/:id', auth(), ApplicationController.getApplicationById);
 
 router.patch('/:id/accept', auth('guardian', 'student', 'admin', 'super_admin', 'moderator'), ApplicationController.acceptApplication);
@@ -13,3 +15,4 @@ router.patch('/:id/reject', auth('guardian', 'student', 'admin', 'super_admin', 
 router.patch('/:id/withdraw', auth('tutor'), ApplicationController.withdrawApplication);
 
 export const ApplicationRoutes = router;
+

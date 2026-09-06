@@ -6,6 +6,7 @@ import { TuitionJob } from '../tuition/tuition.model.js';
 import { Tutor } from '../tutor/tutor.model.js';
 import { User } from '../user/user.model.js';
 import { Verification } from '../verification/verification.model.js';
+import { Coaching } from '../coaching/coaching.model.js';
 
 const getDashboardStats = async () => {
   const [
@@ -137,16 +138,82 @@ const getAllUsers = async (query: Record<string, unknown>) => {
 
   const users = await User.find(filter).sort({ createdAt: -1 }).lean();
 
-  // Attach tutor phone and details if user phone is not directly on user doc
+  // Attach tutor phone, verification and complete profile details
   const userIds = users.map((u) => u._id);
-  const tutorProfiles = await Tutor.find({ userId: { $in: userIds } }).lean();
+  const [tutorProfiles, verifications, coachingProfiles] = await Promise.all([
+    Tutor.find({ userId: { $in: userIds } }).lean(),
+    Verification.find({ tutorId: { $in: userIds } }).lean(),
+    Coaching.find({ userId: { $in: userIds } }).lean(),
+  ]);
+
   const tutorMap = new Map(tutorProfiles.map((t) => [String(t.userId), t]));
+  const verifMap = new Map(verifications.map((v: any) => [String(v.tutorId), v]));
+  const coachingMap = new Map(coachingProfiles.map((c: any) => [String(c.userId), c]));
 
   const enrichedUsers = users.map((u: any) => {
-    const tutorDoc = tutorMap.get(String(u._id));
+    const tutorDoc: any = tutorMap.get(String(u._id));
+    const verifDoc: any = verifMap.get(String(u._id));
+    const coachingDoc: any = coachingMap.get(String(u._id));
+
+    const nidCard = tutorDoc?.nidCard || verifDoc?.nidDocument || '';
+    const studentIdCard = tutorDoc?.studentIdCard || verifDoc?.studentIdDocument || '';
+    const tradeLicense = coachingDoc?.tradeLicense || u.tradeLicense || '';
+    const isApproved = Boolean(u.isApproved || tutorDoc?.isVerified || coachingDoc?.isVerified || verifDoc?.status === 'Approved');
+    const hasDocs = Boolean(nidCard || studentIdCard || tradeLicense);
+    const verificationStatus = isApproved ? 'Approved' : (tutorDoc?.verificationStatus || (hasDocs ? 'Pending' : 'Unsubmitted'));
+
+    // Coaching batch metrics
+    const batches = coachingDoc?.batches || [];
+    const activeBatchesCount = batches.filter((b: any) => b.status === 'Active').length;
+    const totalStudentsCount = batches.reduce((sum: number, b: any) => sum + (Number(b.enrolledCount) || 0), 0);
+    const batchClasses = Array.from(new Set(batches.map((b: any) => b.className).filter(Boolean)));
+    const batchSubjects = Array.from(new Set(batches.map((b: any) => b.subject).filter(Boolean)));
+    const fees = batches.map((b: any) => Number(b.fee) || 0).filter((f: number) => f > 0);
+    const feeRange = fees.length > 0 
+      ? (Math.min(...fees) === Math.max(...fees) ? `৳${Math.min(...fees)}` : `৳${Math.min(...fees)} - ৳${Math.max(...fees)}`)
+      : 'N/A';
+
     return {
       ...u,
-      phone: u.phone || (tutorDoc as any)?.phone || '',
+      phone: u.phone || tutorDoc?.phone || coachingDoc?.phone || '',
+      tutorProfile: tutorDoc || null,
+      coachingProfile: coachingDoc || null,
+      instituteName: coachingDoc?.instituteName || u.name || 'Coaching Center',
+      tradeLicense,
+      batches,
+      totalBatches: batches.length,
+      activeBatches: activeBatchesCount,
+      totalStudents: totalStudentsCount,
+      batchClasses,
+      batchSubjects,
+      feeRange,
+      nidCard,
+      studentIdCard,
+      verificationStatus,
+      isVerified: isApproved,
+      university: tutorDoc?.university || u.university || '',
+      department: tutorDoc?.department || u.department || '',
+      qualification: tutorDoc?.qualification || '',
+      experience: tutorDoc?.experience || '',
+      subjects: tutorDoc?.subjects || batchSubjects || [],
+      preferredAreas: tutorDoc?.preferredAreas || [],
+      mediums: tutorDoc?.mediums || [],
+      preferredClasses: tutorDoc?.preferredClasses || batchClasses || [],
+      salary: tutorDoc?.salary || 0,
+      gender: tutorDoc?.gender || u.gender || 'Male',
+      location: coachingDoc?.location || u.address || tutorDoc?.location || u.location || { district: coachingDoc?.district || u.district || 'Dhaka', area: 'All Areas' },
+      district: coachingDoc?.district || u.district || (typeof u.location === 'object' ? u.location?.district : u.location) || 'Dhaka',
+      bio: coachingDoc?.about || tutorDoc?.bio || u.bio || '',
+      rating: tutorDoc?.rating ?? 5,
+      reviewCount: tutorDoc?.reviewCount ?? 0,
+      totalTuitionsCompleted: tutorDoc?.totalTuitionsCompleted ?? 0,
+      isPremium: Boolean(tutorDoc?.isPremium),
+      certificates: tutorDoc?.certificates || [],
+      cv: tutorDoc?.cv || '',
+      nid: tutorDoc?.nid || '',
+      rejectionReason: tutorDoc?.rejectionReason || verifDoc?.rejectionReason || '',
+      submittedAt: tutorDoc?.submittedAt || verifDoc?.createdAt || coachingDoc?.createdAt || null,
+      verifiedAt: tutorDoc?.verifiedAt || null,
     };
   });
 
@@ -166,7 +233,7 @@ const getPendingTutors = async () => {
   return tutors;
 };
 
-const approveTutor = async (id: string, isApproved: boolean) => {
+const approveTutor = async (id: string, isApproved: boolean, rejectionReason?: string) => {
   // Update User approval status
   let user = await User.findByIdAndUpdate(
     id,
@@ -178,16 +245,48 @@ const approveTutor = async (id: string, isApproved: boolean) => {
   let tutor = await Tutor.findOne({ $or: [{ _id: id }, { userId: id }] });
   if (tutor) {
     tutor.isVerified = isApproved;
+    tutor.verificationStatus = isApproved ? 'Approved' : 'Rejected';
+    tutor.verifiedAt = isApproved ? new Date() : null;
+    if (rejectionReason) {
+      tutor.rejectionReason = rejectionReason;
+    }
     await tutor.save();
     if (!user && tutor.userId) {
       user = await User.findByIdAndUpdate(tutor.userId, { isApproved }, { returnDocument: 'after' });
     }
   } else if (user && user.role === 'tutor') {
-    tutor = await Tutor.create({ userId: user._id, isVerified: isApproved });
+    tutor = await Tutor.create({
+      userId: user._id,
+      isVerified: isApproved,
+      verificationStatus: isApproved ? 'Approved' : 'Rejected',
+      verifiedAt: isApproved ? new Date() : null,
+      rejectionReason: rejectionReason || '',
+    });
   }
 
+  // Also update Coaching profile if exists
+  await Coaching.findOneAndUpdate(
+    { $or: [{ _id: id }, { userId: id }] },
+    { isVerified: isApproved }
+  );
+
   if (!user && !tutor) {
-    throw new AppError(404, 'User or Tutor profile not found!');
+    const coaching = await Coaching.findOne({ $or: [{ _id: id }, { userId: id }] });
+    if (!coaching) {
+      throw new AppError(404, 'User or Profile not found!');
+    }
+  }
+
+  // Invalidate tutor search and detail caches
+  try {
+    const { CacheService } = await import('../../services/cache.service.js');
+    await CacheService.invalidatePattern('tutors:search:*');
+    if (tutor?._id) {
+      await CacheService.deleteCache(`tutor:detail:${tutor._id}`);
+    }
+    await CacheService.deleteCache('homepage:data');
+  } catch (err) {
+    console.warn('⚠️ Cache invalidation error:', err);
   }
 
   if (user && isApproved) {
@@ -199,12 +298,25 @@ const approveTutor = async (id: string, isApproved: boolean) => {
         title: isCoaching ? 'কোচিং সেন্টার অ্যাকাউন্ট অনুমোদন সফল হয়েছে 🎉' : 'অ্যাকাউন্ট ভেরিফিকেশন সফল হয়েছে 🎉',
         message: isCoaching 
           ? 'অভিনন্দন! অ্যাডমিন আপনার কোচিং সেন্টার অ্যাকাউন্ট অনুমোদন করেছেন। এখন থেকে আপনি কোচিং ড্যাশবোর্ডে লগইন করে ব্যাচ ও মেম্বার পরিচালনা করতে পারবেন।'
-          : 'অভিনন্দন! অ্যাডমিন আপনার টিউটর অ্যাকাউন্ট অনুমোদন ও ভেরিফাই করেছেন।',
+          : 'অভিনন্দন! অ্যাডমিন আপনার NID ও আইডি কার্ড পর্যালোচনা করে টিউটর অ্যাকাউন্ট ভেরিফাই করেছেন। এখন থেকে আপনি সকল টিউশন জবে আবেদন করতে পারবেন।',
         referenceId: String(user._id),
         referenceType: isCoaching ? 'Coaching' : 'Tutor',
       });
     } catch (err) {
       console.warn('⚠️ User account approval notification error:', err);
+    }
+  } else if (user && !isApproved && rejectionReason) {
+    try {
+      await NotificationService.createNotification({
+        userId: String(user._id),
+        type: 'tutor_verification',
+        title: 'ভেরিফিকেশন আবেদন প্রত্যাখ্যাত হয়েছে',
+        message: `আপনার ভেরিফিকেশন আবেদনটি প্রত্যাখ্যাত হয়েছে। কারণ: ${rejectionReason}। অনুগ্রহ করে সঠিক ডকুমেন্ট পুনরায় আপলোড করুন।`,
+        referenceId: String(user._id),
+        referenceType: 'Tutor',
+      });
+    } catch (err) {
+      console.warn('⚠️ User account rejection notification error:', err);
     }
   }
 
@@ -293,7 +405,11 @@ const deleteUser = async (id: string) => {
   if (!user) {
     throw new AppError(404, 'User not found!');
   }
-  await Tutor.deleteMany({ userId: id });
+  await Promise.all([
+    Tutor.deleteMany({ userId: id }),
+    Coaching.deleteMany({ userId: id }),
+    Verification.deleteMany({ tutorId: id }),
+  ]);
   return user;
 };
 

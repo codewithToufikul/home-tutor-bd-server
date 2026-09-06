@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { AppError } from '../../errors/AppError.js';
 import { CACHE_TTL, CacheService } from '../../services/cache.service.js';
 import {
@@ -11,6 +12,7 @@ import {
 import type { CursorMeta, OffsetMeta } from '../../utils/pagination.js';
 import { Application } from '../application/application.model.js';
 import { HireRequest } from '../hire/hire.model.js';
+import { User } from '../user/user.model.js';
 import type { ITutor } from './tutor.interface.js';
 import { Tutor } from './tutor.model.js';
 
@@ -66,7 +68,16 @@ const buildFilterMatch = (query: ITutorSearchQuery): Record<string, unknown> => 
   if (query.gender && query.gender !== 'Any' && query.gender !== 'All') {
     match['gender'] = { $regex: query.gender, $options: 'i' };
   }
-  if (query.isVerified === 'true') match['isVerified'] = true;
+  
+  // By default, ONLY verified tutors are visible publicly!
+  if (query.isVerified === 'all') {
+    // Admin or specific query for all tutors
+  } else if (query.isVerified === 'false') {
+    match['isVerified'] = false;
+  } else {
+    match['isVerified'] = true;
+  }
+
   if (query.isPremium === 'true') match['isPremium'] = true;
 
   if (query.minSalary || query.maxSalary) {
@@ -188,7 +199,14 @@ const getTutorById = async (id: string) => {
   const cached = await CacheService.getCache(cacheKey);
   if (cached) return cached;
 
-  const tutor = await Tutor.findById(id).populate('userId', 'name email phone avatar status');
+  let tutor = null;
+  if (mongoose.isValidObjectId(id)) {
+    tutor = await Tutor.findById(id).populate('userId', 'name avatar status role');
+    if (!tutor) {
+      tutor = await Tutor.findOne({ userId: id }).populate('userId', 'name avatar status role');
+    }
+  }
+
   if (!tutor) throw new AppError(404, 'Tutor profile not found!');
 
   await CacheService.setCache(cacheKey, tutor, CACHE_TTL.SEARCH_TUTORS);
@@ -208,14 +226,121 @@ const createMyProfile = async (userId: string, payload: Partial<ITutor>) => {
   return created;
 };
 
-const updateMyProfile = async (userId: string, payload: Partial<ITutor>) => {
+const updateMyProfile = async (
+  userId: string,
+  payload: Partial<ITutor> & { photoUrl?: string; avatar?: string; name?: string; fullName?: string },
+) => {
+  const updateData: any = { ...payload };
+
+  const avatarUrl = updateData.avatar || updateData.photoUrl;
+  const newName = updateData.name || updateData.fullName;
+
+  // Sync avatar and name to User model if provided
+  if (avatarUrl || newName) {
+    const userUpdate: Record<string, string> = {};
+    if (avatarUrl) userUpdate.avatar = avatarUrl;
+    if (newName) userUpdate.name = newName;
+    await User.findByIdAndUpdate(userId, { $set: userUpdate });
+  }
+
+  // If tutor uploads NID card or Student ID card, set verification status to Pending
+  if (updateData.nidCard || updateData.studentIdCard) {
+    const existing = await Tutor.findOne({ userId });
+    const hasNid = Boolean(updateData.nidCard || existing?.nidCard);
+    const hasStudentId = Boolean(updateData.studentIdCard || existing?.studentIdCard);
+
+    if (hasNid && hasStudentId && !existing?.isVerified) {
+      updateData.verificationStatus = 'Pending';
+      updateData.submittedAt = new Date();
+      updateData.rejectionReason = '';
+    }
+  }
+
   const profile = await Tutor.findOneAndUpdate(
     { userId },
-    { $set: payload },
+    { $set: updateData },
     { new: true, upsert: true, runValidators: true },
   );
 
   // Invalidate tutor search and detail caches
+  await CacheService.invalidatePattern('tutors:search:*');
+  if (profile?._id) {
+    await CacheService.deleteCache(`tutor:detail:${profile._id}`);
+  }
+  await CacheService.deleteCache('homepage:data');
+
+  return profile;
+};
+
+const submitVerification = async (
+  userId: string,
+  payload: { nidCard: string; studentIdCard: string; nid?: string },
+) => {
+  if (!payload.nidCard || !payload.studentIdCard) {
+    throw new AppError(400, 'NID Card এবং Student/Tutor ID Card উভয় ডকুমেন্ট প্রদান করা আবশ্যক!');
+  }
+
+  const updateData: Partial<ITutor> = {
+    nidCard: payload.nidCard,
+    studentIdCard: payload.studentIdCard,
+    verificationStatus: 'Pending',
+    submittedAt: new Date(),
+    rejectionReason: '',
+  };
+
+  if (payload.nid) {
+    updateData.nid = payload.nid;
+  }
+
+  const profile = await Tutor.findOneAndUpdate(
+    { userId },
+    { $set: updateData },
+    { new: true, upsert: true, runValidators: true },
+  );
+
+  // Also sync with Verification model so admin can view in verification requests
+  try {
+    const { Verification } = await import('../verification/verification.model.js');
+    await Verification.findOneAndUpdate(
+      { tutorId: userId },
+      {
+        tutorId: userId,
+        nidDocument: payload.nidCard,
+        studentIdDocument: payload.studentIdCard,
+        status: 'Pending',
+      },
+      { upsert: true, new: true },
+    );
+  } catch (err) {
+    console.warn('⚠️ Could not sync verification model:', err);
+  }
+
+  // Send real-time notification to all staff (Super Admin, Admin, Moderator)
+  try {
+    const { User } = await import('../user/user.model.js');
+    const { NotificationService } = await import('../notification/notification.service.js');
+    
+    const tutorUser = await User.findById(userId);
+    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } });
+    
+    const tutorName = tutorUser?.name || 'টিউটর';
+    const tutorUni = profile?.university ? ` (${profile.university})` : '';
+
+    for (const staff of staffUsers) {
+      await NotificationService.createNotification({
+        userId: String(staff._id),
+        type: 'tutor_verification',
+        title: '👨‍🏫 নতুন টিউটর ভেরিফিকেশন আবেদন জমা হয়েছে',
+        message: `টিউটর "${tutorName}"${tutorUni} ভেরিফিকেশনের জন্য NID এবং আইডি কার্ড জমা দিয়েছেন। অ্যাডমিন প্যানেল থেকে পর্যালোচনা করুন।`,
+        referenceId: String(userId),
+        referenceType: 'Tutor',
+      });
+    }
+  } catch (err) {
+    console.warn('⚠️ Could not send staff verification notification:', err);
+  }
+
+  // Invalidate cache
   await CacheService.invalidatePattern('tutors:search:*');
   if (profile?._id) {
     await CacheService.deleteCache(`tutor:detail:${profile._id}`);
@@ -267,6 +392,7 @@ export const TutorService = {
   getTutorById,
   createMyProfile,
   updateMyProfile,
+  submitVerification,
   getMyProfile,
   getMyApplications,
   getMyHireRequests,

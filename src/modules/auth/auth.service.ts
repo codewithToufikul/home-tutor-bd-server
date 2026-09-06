@@ -4,12 +4,14 @@ import { AppError } from '../../errors/AppError.js';
 import { addEmailJob } from '../../jobs/email.queue.js';
 import { generateOTP, verifyOTP } from '../../services/otp.service.js';
 import { createToken, verifyToken } from '../../utils/jwt.js';
+import { Coaching } from '../coaching/coaching.model.js';
 import { Tutor } from '../tutor/tutor.model.js';
 import { User } from '../user/user.model.js';
+import bcryptjs from 'bcryptjs';
 import { ACCESS_TOKEN_EXPIRES_IN, REFRESH_TOKEN_EXPIRES_IN } from './auth.constants.js';
 import type { IAuthResponse, ILoginUser, IRegisterUser, IVerifyOTP } from './auth.interface.js';
 
-const registerUser = async (payload: IRegisterUser) => {
+const registerUser = async (payload: IRegisterUser & { tradeLicense?: string }) => {
   const isUserExist = await User.findOne({ email: payload.email });
   if (isUserExist) {
     throw new AppError(400, 'User with this email already exists!');
@@ -21,63 +23,58 @@ const registerUser = async (payload: IRegisterUser) => {
     phone: payload.phone || '',
     password: payload.password,
     role: payload.role,
+    tradeLicense: payload.tradeLicense || '',
     isEmailVerified: false,
-    // ONLY Coaching Center requires admin approval (isApproved: false).
-    // Tutors, Students, Guardians are automatically approved (isApproved: true).
-    isApproved: payload.role !== 'coaching',
+    // Students and Guardians are auto-approved.
+    // Tutors and Coaching Centers require document/admin verification (isApproved: false).
+    isApproved: payload.role === 'student' || payload.role === 'guardian',
   });
 
   if (payload.role === 'tutor') {
     await Tutor.create({
       userId: user._id,
       location: { district: payload.location || 'Dhaka', area: 'All Areas' },
-      isVerified: true,
+      isVerified: false,
+      verificationStatus: 'Unsubmitted',
+    });
+  } else if (payload.role === 'coaching') {
+    await Coaching.create({
+      userId: user._id,
+      instituteName: payload.name,
+      tradeLicense: payload.tradeLicense || '',
+      phone: payload.phone || '',
+      email: payload.email || '',
+      district: payload.location || 'Dhaka',
+      isVerified: false,
     });
   }
 
-  // Real-time notification to all Staff (Super Admin, Admin, Moderator)
-  try {
-    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } });
-    if (payload.role === 'coaching') {
-      for (const staff of staffUsers) {
-        await NotificationService.createNotification({
-          userId: String(staff._id),
-          type: 'tutor_verification',
-          title: '🏢 নতুন কোচিং সেন্টার রেজিস্ট্রেশন (অনুমোদনের জন্য অপেক্ষমাণ)',
-          message: `নতুন কোচিং সেন্টার "${user.name || user.email}" অ্যাকাউন্ট খুলেছেন। ড্যাশবোর্ড ব্যবহারের জন্য অ্যাডমিন অনুমোদনের প্রয়োজন।`,
-          referenceId: String(user._id),
-          referenceType: 'Coaching',
-        });
-      }
-    } else if (payload.role === 'tutor') {
-      for (const staff of staffUsers) {
-        await NotificationService.createNotification({
-          userId: String(staff._id),
-          type: 'tutor_verification',
-          title: '👨‍🏫 নতুন টিউটর রেজিস্ট্রেশন সম্পন্ন',
-          message: `নতুন টিউটর "${user.name || user.email}" সফলভাবে প্ল্যাটফর্মে রেজিস্ট্রেশন সম্পন্ন করেছেন।`,
-          referenceId: String(user._id),
-          referenceType: 'Tutor',
-        });
-      }
-    }
-  } catch (err) {
-    console.warn('⚠️ Staff registration notification error:', err);
+  // Real-time Push Notification & Alerts to ALL Admin and Moderator accounts
+  NotificationService.notifyStaffOnNewUserRegistration({
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    role: user.role,
+    location: payload.location,
+  }).catch((err) => console.warn('⚠️ Staff registration notification error:', err));
+
+  const targetEmail = user.email || '';
+  const otp = generateOTP(targetEmail);
+
+  if (targetEmail) {
+    // 🚀 Dispatched to BullMQ Queue asynchronously!
+    // API responds immediately to the user without waiting 5 seconds for the email server.
+    addEmailJob('send-email-otp', {
+      email: targetEmail,
+      name: user.name,
+      otp,
+    });
   }
 
-  const otp = generateOTP(user.email);
-
-  // 🚀 Dispatched to BullMQ Queue asynchronously!
-  // API responds immediately to the user without waiting 5 seconds for the email server.
-  addEmailJob('send-email-otp', {
-    email: user.email,
-    name: user.name,
-    otp,
-  });
-
   return {
-    email: user.email,
-    otpSent: true,
+    email: targetEmail,
+    otpSent: Boolean(targetEmail),
     otp, // Useful in dev mode
   };
 };
@@ -93,10 +90,10 @@ const verifyEmailOTP = async (payload: IVerifyOTP) => {
     throw new AppError(404, 'User not found!');
   }
 
-  // Keep isApproved: false for coaching centers until approved by admin.
-  // Everyone else is auto-approved.
-  const isCoaching = existingUser.role === 'coaching';
-  const shouldApprove = !isCoaching ? true : existingUser.isApproved;
+  // Only student and guardian are auto-approved upon email OTP verification.
+  // Tutors and Coaching centers remain isApproved: false until admin approves documents.
+  const isAutoApprovedRole = existingUser.role === 'student' || existingUser.role === 'guardian';
+  const shouldApprove = isAutoApprovedRole ? true : existingUser.isApproved;
 
   const user = await User.findOneAndUpdate(
     { email: payload.email },
@@ -139,10 +136,12 @@ const verifyEmailOTP = async (payload: IVerifyOTP) => {
   }
 
   // Welcome email dispatched via BullMQ
-  addEmailJob('send-welcome-email', {
-    email: user.email,
-    name: user.name,
-  });
+  if (user.email) {
+    addEmailJob('send-welcome-email', {
+      email: user.email,
+      name: user.name,
+    });
+  }
 
   const jwtPayload = {
     userId: String(user._id),
@@ -190,12 +189,15 @@ const loginUser = async (payload: ILoginUser): Promise<IAuthResponse> => {
   }
 
   if (!user.isEmailVerified) {
-    const otp = generateOTP(user.email);
-    addEmailJob('send-email-otp', {
-      email: user.email,
-      name: user.name,
-      otp,
-    });
+    const targetEmail = user.email || '';
+    const otp = generateOTP(targetEmail);
+    if (targetEmail) {
+      addEmailJob('send-email-otp', {
+        email: targetEmail,
+        name: user.name,
+        otp,
+      });
+    }
     throw new AppError(
       401,
       'Email not verified! A new verification OTP code has been sent to your email.',
@@ -286,42 +288,58 @@ const getMe = async (userId: string) => {
 };
 
 const forgotPassword = async (email: string) => {
-  const user = await User.findOne({ email });
-  if (!user) {
-    throw new AppError(404, 'User with this email does not exist!');
+  if (!email || typeof email !== 'string') {
+    throw new AppError(400, 'অনুগ্রহ করে একটি সঠিক ইমেইল অ্যাড্রেস প্রদান করুন!');
   }
 
-  const otp = generateOTP(email);
+  const cleanEmail = email.trim().toLowerCase();
+  const user = await User.findOne({ email: cleanEmail });
+  if (!user) {
+    throw new AppError(404, 'এই ইমেইল দিয়ে কোনো অ্যাকাউন্ট পাওয়া যায়নি!');
+  }
 
-  // Dispatch reset password email job to BullMQ queue
+  const otp = generateOTP(cleanEmail);
+
+  // Dispatch reset password email job to BullMQ queue (with fallback)
   addEmailJob('send-reset-password-email', {
-    email: user.email,
+    email: user.email || cleanEmail,
     name: user.name,
     otp,
   });
 
   return {
-    message: 'Password reset OTP sent to your email.',
-    otp,
+    message: 'আপনার ইমেইলে ৬ ডিজিটের ওটিপি (OTP) পাঠানো হয়েছে।',
+    otp: process.env.NODE_ENV === 'development' ? otp : undefined,
   };
 };
 
 const resetPassword = async (email: string, otp: string, newPassword: string) => {
-  const isValid = await verifyOTP(email, otp);
-  if (!isValid) {
-    throw new AppError(400, 'Invalid or expired OTP!');
+  if (!email || !otp || !newPassword) {
+    throw new AppError(400, 'ইমেইল, ওটিপি কোড এবং নতুন পাসওয়ার্ড প্রদান করা আবশ্যক!');
   }
 
-  const user = await User.findOne({ email });
+  if (typeof newPassword !== 'string' || newPassword.length < 6) {
+    throw new AppError(400, 'নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে!');
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanOTP = otp.trim();
+
+  const isValid = await verifyOTP(cleanEmail, cleanOTP);
+  if (!isValid) {
+    throw new AppError(400, 'ভুল অথবা মেয়াদোত্তীর্ণ ওটিপি (OTP)! পুনরায় কোড পাঠিয়ে চেষ্টা করুন।');
+  }
+
+  const user = await User.findOne({ email: cleanEmail });
   if (!user) {
-    throw new AppError(404, 'User not found!');
+    throw new AppError(404, 'ব্যবহারকারী পাওয়া যায়নি!');
   }
 
   user.password = newPassword;
   await user.save();
 
   return {
-    message: 'Password reset successfully. You can now login with your new password.',
+    message: 'পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে। নতুন পাসওয়ার্ড দিয়ে লগইন করুন।',
   };
 };
 
@@ -344,13 +362,54 @@ const saveFcmToken = async (userId: string, fcmToken: string) => {
 };
 
 const updateMe = async (userId: string, payload: Record<string, unknown>) => {
-  const allowedFields = ['name', 'phone', 'avatar', 'location', 'address', 'studentClass', 'institution'];
+  const allowedFields = [
+    'name',
+    'phone',
+    'avatar',
+    'location',
+    'address',
+    'division',
+    'divisionId',
+    'district',
+    'districtId',
+    'upazila',
+    'upazilaId',
+    'area',
+    'gender',
+    'studentClass',
+    'institution',
+    'medium',
+    'emergencyContact',
+    'guardianName',
+    'guardianPhone',
+    'guardianRelation',
+    'preferredTuitionMode',
+    'bio',
+    'notificationPreferences',
+  ];
   const updateData: Record<string, unknown> = {};
 
   for (const key of Object.keys(payload)) {
     if (allowedFields.includes(key) || key.startsWith('custom')) {
       updateData[key] = payload[key];
     }
+  }
+
+  // Handle Password Change if requested
+  if (payload.newPassword && typeof payload.newPassword === 'string') {
+    const userWithPass = await User.findById(userId).select('+password');
+    if (!userWithPass) {
+      throw new AppError(404, 'User not found');
+    }
+    if (!payload.currentPassword || typeof payload.currentPassword !== 'string') {
+      throw new AppError(400, 'Current password is required to change password');
+    }
+    const isMatched = await User.isPasswordMatched(payload.currentPassword, userWithPass.password || '');
+    if (!isMatched) {
+      throw new AppError(400, 'Current password does not match!');
+    }
+    const hashedPassword = await bcryptjs.hash(payload.newPassword, 10);
+    updateData.password = hashedPassword;
   }
 
   const updatedUser = await User.findByIdAndUpdate(userId, { $set: updateData }, { new: true, runValidators: true });

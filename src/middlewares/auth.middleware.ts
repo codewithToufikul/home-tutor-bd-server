@@ -6,7 +6,7 @@ import { verifyToken } from '../utils/jwt.js';
 export interface CustomRequest extends Request {
   user?: {
     userId: string;
-    email: string;
+    email?: string | undefined;
     role: string;
   };
 }

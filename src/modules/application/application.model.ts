@@ -51,6 +51,48 @@ const applicationSchema = new Schema<IApplication, ApplicationModel>(
       type: Date,
       default: Date.now,
     },
+
+    // ─── Digital Legal Contract & Deed Fields ─────────────────────────
+    contractId: {
+      type: String,
+      default: '',
+    },
+    signatureImage: {
+      type: String,
+      default: '',
+    },
+    ipAddress: {
+      type: String,
+      default: '',
+    },
+    userAgent: {
+      type: String,
+      default: '',
+    },
+    signedAt: {
+      type: Date,
+      default: Date.now,
+    },
+    mediaFee: {
+      type: Number,
+      default: 0,
+    },
+    securityHash: {
+      type: String,
+      default: '',
+    },
+    agreedToTerms: {
+      type: Boolean,
+      default: false,
+    },
+    tutorSnapshot: {
+      type: Schema.Types.Mixed,
+      default: null,
+    },
+    tuitionSnapshot: {
+      type: Schema.Types.Mixed,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -63,6 +105,6 @@ applicationSchema.index({ tutorId: 1, status: 1 });
 applicationSchema.index({ jobId: 1, status: 1 });
 applicationSchema.index({ matchScore: -1 });
 applicationSchema.index({ isAutoShortlisted: 1 });
+applicationSchema.index({ contractId: 1 });
 
 export const Application = model<IApplication, ApplicationModel>('Application', applicationSchema);
-

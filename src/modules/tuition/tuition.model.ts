@@ -8,8 +8,13 @@ import type { ITuitionJob, TuitionJobModel } from './tuition.interface.js';
 
 const tuitionLocationSchema = new Schema(
   {
+    division: { type: String, trim: true, default: '' },
     district: { type: String, required: [true, 'District is required'], trim: true },
+    upazila: { type: String, trim: true, default: '' },
+    union: { type: String, trim: true, default: '' },
+    ward: { type: String, trim: true, default: '' },
     area: { type: String, required: [true, 'Area is required'], trim: true },
+    detailedAddress: { type: String, trim: true, default: '' },
   },
   { _id: false },
 );
@@ -66,6 +71,15 @@ const tuitionJobSchema = new Schema<ITuitionJob, TuitionJobModel>(
     numStudents: { type: Number, default: 1 },
     requirements: { type: [String], default: [] },
 
+    // ─── Contact & Preferences ────────────────────────────────────────────────
+    phone: { type: String, trim: true, default: '' },
+    whatsappNumber: { type: String, trim: true, default: '' },
+    contactName: { type: String, trim: true, default: '' },
+    universityPreference: { type: String, trim: true, default: '' },
+    studentGender: { type: String, trim: true, default: 'Any' },
+    duration: { type: String, trim: true, default: '1.5 Hours' },
+    startTime: { type: String, trim: true, default: 'Evening' },
+
     // ─── Auto Matching ────────────────────────────────────────────────────────
     preferredTime: { type: [String], default: [] },
     tutorQualification: { type: String, trim: true, default: '' },
@@ -88,7 +102,7 @@ const tuitionJobSchema = new Schema<ITuitionJob, TuitionJobModel>(
       default: 'Pending',
     },
   },
-  { timestamps: true },
+  { timestamps: true, strict: false },
 );
 
 // ─── Indexes ───────────────────────────────────────────────────────────────

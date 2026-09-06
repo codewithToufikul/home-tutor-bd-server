@@ -50,11 +50,22 @@ const addReview = async (req: Request, res: Response) => {
   sendResponse(res, { statusCode: 200, success: true, message: 'Review submitted successfully.', data: result });
 };
 
+const submitVerification = async (req: CustomRequest, res: Response) => {
+  const result = await TutorService.submitVerification(req.user!.userId, req.body);
+  sendResponse(res, {
+    statusCode: 200,
+    success: true,
+    message: 'Verification documents submitted successfully and awaiting admin approval.',
+    data: result,
+  });
+};
+
 export const TutorController = {
   getAllTutors,
   getTutorById,
   createMyProfile,
   updateMyProfile,
+  submitVerification,
   getMyProfile,
   getMyApplications,
   getMyHireRequests,

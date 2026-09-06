@@ -4,11 +4,26 @@ import { HireController } from './hire.controller.js';
 
 const router = Router();
 
-router.post('/', auth('guardian', 'student'), HireController.createHireRequest);
+// Public / Guest / User Hire Request Submission
+router.post('/', HireController.createHireRequest);
+
+// List & Detail (Protected)
 router.get('/', auth(), HireController.getHireRequests);
 router.get('/:id', auth(), HireController.getHireRequestById);
 
-router.patch('/:id/approve', auth('tutor', 'admin'), HireController.approveHireRequest);
-router.patch('/:id/reject', auth('tutor', 'admin'), HireController.rejectHireRequest);
+// Status Update (Admin)
+router.patch(
+  '/:id/status',
+  auth('admin', 'super_admin', 'moderator'),
+  HireController.updateHireRequestStatus,
+);
+
+// Confirm Tuition & Assign to Tutor's Active Dashboard (Admin)
+router.post(
+  '/:id/confirm-tuition',
+  auth('admin', 'super_admin', 'moderator'),
+  HireController.confirmAndAssignTuition,
+);
 
 export const HireRoutes = router;
+

@@ -1,4 +1,5 @@
 import type { Server, Socket } from 'socket.io';
+import { sendOneSignalPush } from '../../services/onesignal.service.js';
 import { setIO } from '../../services/socket.service.js';
 import { verifyToken } from '../../utils/jwt.js';
 import { SOCKET_EVENTS } from './chat.constants.js';
@@ -84,6 +85,28 @@ export const initializeChatSocket = (io: Server) => {
           io.to(`user:${data.receiverId}`).emit(SOCKET_EVENTS.RECEIVE_MESSAGE, savedMessage);
           io.to(`user:${data.receiverId}`).emit('receive_message', savedMessage);
           io.to(`user:${data.receiverId}`).emit('new_message_notification', savedMessage);
+
+          // Dispatch OneSignal Web & App Push to receiver
+          const senderObj = (savedMessage as any)?.senderId || {};
+          const senderName = typeof senderObj === 'object' && senderObj?.name ? senderObj.name : 'Home Tutor BD';
+          const roleBadge = typeof senderObj === 'object' && senderObj?.role ? (senderObj.role === 'tutor' ? ' (টিউটর)' : senderObj.role === 'student' ? ' (স্টুডেন্ট)' : senderObj.role === 'guardian' ? ' (অভিভাবক)' : ' (অ্যাডমিন)') : '';
+          
+          let snippet = data.message ? (data.message.length > 85 ? data.message.substring(0, 85) + '...' : data.message) : 'আপনাকে একটি মেসেজ পাঠিয়েছেন';
+          if (data.type === 'image' || (!data.message && data.attachments?.length)) {
+            snippet = '📷 একটি ছবি/ফাইল পাঠিয়েছেন';
+          }
+
+          sendOneSignalPush({
+            userIds: [String(data.receiverId)],
+            title: `💬 ${senderName}${roleBadge}`,
+            message: snippet,
+            url: `/chat/${userId}`,
+            data: {
+              type: 'chat',
+              conversationId: String(data.conversationId),
+              senderId: String(userId),
+            },
+          }).catch((err) => console.warn('[OneSignal] Chat push notice error:', err));
         } catch (err: unknown) {
           socket.emit('error', {
             message: err instanceof Error ? err.message : 'Failed to send message',

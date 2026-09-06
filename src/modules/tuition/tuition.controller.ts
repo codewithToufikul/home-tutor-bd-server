@@ -44,10 +44,22 @@ const deleteJob = async (req: CustomRequest, res: Response) => {
 };
 
 const applyToJob = async (req: CustomRequest, res: Response) => {
+  const clientIp = (
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+    req.socket.remoteAddress ||
+    req.ip ||
+    '127.0.0.1'
+  );
+  const userAgent = (req.headers['user-agent'] as string) || 'Web Browser';
+
   const result = await TuitionService.applyToJob(
     String(req.params['id']),
     req.user!.userId,
-    req.body,
+    {
+      ...req.body,
+      ipAddress: clientIp,
+      userAgent,
+    },
   );
   sendResponse(res, { statusCode: 201, success: true, message: 'Application submitted.', data: result });
 };

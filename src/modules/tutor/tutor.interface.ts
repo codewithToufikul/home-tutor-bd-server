@@ -25,9 +25,16 @@ export interface ITutor {
   bio?: string;
   rating: number;
   reviewCount: number;
+  totalTuitionsCompleted: number;
   isVerified: boolean;
   isPremium: boolean;
   nid?: string;
+  nidCard?: string;
+  studentIdCard?: string;
+  verificationStatus?: 'Unsubmitted' | 'Pending' | 'Approved' | 'Rejected';
+  rejectionReason?: string;
+  submittedAt?: Date | null;
+  verifiedAt?: Date | null;
   certificates?: string[];
   cv?: string;
   createdAt?: Date;

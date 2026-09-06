@@ -9,6 +9,7 @@ const registerValidationSchema = z.object({
     gender: z.string().optional(),
     password: z.string({ message: 'Password is required' }).min(6, 'Password must be at least 6 characters'),
     role: z.enum(['admin', 'tutor', 'student', 'guardian', 'coaching'], { message: 'Invalid role' }),
+    tradeLicense: z.string().optional(),
   }),
 });
 

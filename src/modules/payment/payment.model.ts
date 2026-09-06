@@ -1,107 +1,6 @@
 import { Schema, model } from 'mongoose';
-import {
-  PAYMENT_METHODS,
-  PAYMENT_STATUSES,
-  TRANSACTION_STATUSES,
-  TRANSACTION_TYPES,
-  WITHDRAWAL_STATUSES,
-} from './payment.constants.js';
-import type {
-  IPayment,
-  ITransaction,
-  IWallet,
-  IWithdrawal,
-  PaymentModel,
-  TransactionModel,
-  WalletModel,
-  WithdrawalModel,
-} from './payment.interface.js';
+import type { IPayment, PaymentModel } from './payment.interface.js';
 
-// 1. Wallet Schema
-const walletSchema = new Schema<IWallet, WalletModel>(
-  {
-    userId: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
-      required: [true, 'User ID is required'],
-      unique: true,
-    },
-    balance: {
-      type: Number,
-      default: 0,
-      min: [0, 'Balance cannot be negative'],
-    },
-    creditBalance: {
-      type: Number,
-      default: 0,
-      min: [0, 'Credit balance cannot be negative'],
-    },
-    withdrawableBalance: {
-      type: Number,
-      default: 0,
-      min: [0, 'Withdrawable balance cannot be negative'],
-    },
-  },
-  {
-    timestamps: true,
-  },
-);
-
-export const Wallet = model<IWallet, WalletModel>('Wallet', walletSchema);
-
-// 2. Transaction Audit Ledger Schema
-const transactionSchema = new Schema<ITransaction, TransactionModel>(
-  {
-    userId: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
-      required: [true, 'User ID is required'],
-    },
-    type: {
-      type: String,
-      enum: {
-        values: TRANSACTION_TYPES,
-        message: '{VALUE} is not a valid transaction type',
-      },
-      required: [true, 'Transaction type is required'],
-    },
-    amount: {
-      type: Number,
-      required: [true, 'Amount is required'],
-    },
-    balanceBefore: {
-      type: Number,
-      required: [true, 'Balance before transaction is required'],
-    },
-    balanceAfter: {
-      type: Number,
-      required: [true, 'Balance after transaction is required'],
-    },
-    reference: {
-      type: String,
-      default: '',
-    },
-    status: {
-      type: String,
-      enum: {
-        values: TRANSACTION_STATUSES,
-        message: '{VALUE} is not a valid transaction status',
-      },
-      default: 'Completed',
-    },
-    metadata: {
-      type: Schema.Types.Mixed,
-      default: {},
-    },
-  },
-  {
-    timestamps: true,
-  },
-);
-
-export const Transaction = model<ITransaction, TransactionModel>('Transaction', transactionSchema);
-
-// 3. Payment Gateway Deposit Schema
 const paymentSchema = new Schema<IPayment, PaymentModel>(
   {
     userId: {
@@ -109,87 +8,108 @@ const paymentSchema = new Schema<IPayment, PaymentModel>(
       ref: 'User',
       required: [true, 'User ID is required'],
     },
+    tuitionJobId: {
+      type: Schema.Types.ObjectId,
+      ref: 'TuitionJob',
+      default: null,
+    },
+    applicationId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Application',
+      default: null,
+    },
+    paymentType: {
+      type: String,
+      enum: ['tuition_fee', 'verification_fee', 'wallet_recharge'],
+      default: 'tuition_fee',
+    },
     amount: {
       type: Number,
-      required: [true, 'Amount is required'],
+      required: [true, 'Paid amount is required'],
       min: [1, 'Amount must be greater than 0'],
+    },
+    payableAmount: {
+      type: Number,
+      default: 0,
     },
     paymentMethod: {
       type: String,
-      enum: {
-        values: PAYMENT_METHODS,
-        message: '{VALUE} is not a valid payment method',
-      },
+      enum: ['bkash', 'nagad', 'rocket', 'bank'],
       required: [true, 'Payment method is required'],
+    },
+    senderNumber: {
+      type: String,
+      required: [true, 'Sender phone number is required'],
+      trim: true,
     },
     transactionId: {
       type: String,
-      required: [true, 'Transaction ID is required'],
+      required: [true, 'Transaction ID (TrxID) is required'],
       unique: true,
-    },
-    status: {
-      type: String,
-      enum: {
-        values: PAYMENT_STATUSES,
-        message: '{VALUE} is not a valid payment status',
-      },
-      default: 'Pending',
-    },
-  },
-  {
-    timestamps: true,
-  },
-);
-
-export const Payment = model<IPayment, PaymentModel>('Payment', paymentSchema);
-
-// 4. Cashout Withdrawal Request Schema
-const withdrawalSchema = new Schema<IWithdrawal, WithdrawalModel>(
-  {
-    userId: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
-      required: [true, 'User ID is required'],
-    },
-    amount: {
-      type: Number,
-      required: [true, 'Amount is required'],
-      min: [1, 'Amount must be greater than 0'],
-    },
-    paymentMethod: {
-      type: String,
-      enum: {
-        values: PAYMENT_METHODS,
-        message: '{VALUE} is not a valid payment method',
-      },
-      required: [true, 'Payment method is required'],
-    },
-    accountNumber: {
-      type: String,
-      required: [true, 'Account number is required'],
       trim: true,
+      uppercase: true,
+    },
+    receiptUrl: {
+      type: String,
+      default: null,
+    },
+    receiptPublicId: {
+      type: String,
+      default: null,
     },
     status: {
       type: String,
-      enum: {
-        values: WITHDRAWAL_STATUSES,
-        message: '{VALUE} is not a valid withdrawal status',
-      },
-      default: 'Pending',
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending',
     },
-    reviewedBy: {
+    rejectionReason: {
+      type: String,
+      default: null,
+    },
+    approvedBy: {
       type: Schema.Types.ObjectId,
       ref: 'User',
       default: null,
     },
-    reviewedAt: {
+    approvedAt: {
       type: Date,
       default: null,
     },
+    invoiceNumber: {
+      type: String,
+      default: function () {
+        const rand = Math.floor(10000 + Math.random() * 90000);
+        return `INV-${new Date().getFullYear()}-${rand}`;
+      },
+    },
+    notes: {
+      type: String,
+      default: '',
+    },
   },
   {
     timestamps: true,
-  },
+  }
 );
 
-export const Withdrawal = model<IWithdrawal, WithdrawalModel>('Withdrawal', withdrawalSchema);
+paymentSchema.index({ userId: 1, createdAt: -1 });
+paymentSchema.index({ tuitionJobId: 1 });
+paymentSchema.index({ status: 1 });
+
+export const Payment = model<IPayment, PaymentModel>('Payment', paymentSchema);
+
+// Withdrawal Schema (for admin stats / wallet balance)
+const withdrawalSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    amount: { type: Number, required: true },
+    paymentMethod: { type: String, default: 'bkash' },
+    accountNumber: { type: String, default: '' },
+    status: { type: String, enum: ['Pending', 'Approved', 'Rejected', 'Completed'], default: 'Pending' },
+    reviewedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    reviewedAt: { type: Date, default: null },
+  },
+  { timestamps: true }
+);
+
+export const Withdrawal = model('Withdrawal', withdrawalSchema);

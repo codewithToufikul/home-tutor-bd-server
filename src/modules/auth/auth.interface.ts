@@ -26,11 +26,11 @@ export interface IAuthResponse {
   user: {
     _id: string;
     name: string;
-    username?: string;
-    email: string;
+    username?: string | undefined;
+    email?: string | undefined;
     role: string;
-    permissions?: string[];
-    avatar?: string;
+    permissions?: string[] | undefined;
+    avatar?: string | undefined;
     isEmailVerified: boolean;
     isApproved: boolean;
   };

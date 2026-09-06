@@ -24,7 +24,11 @@ const getPendingTutors = async (_req: Request, res: Response) => {
 };
 
 const approveTutor = async (req: Request, res: Response) => {
-  const result = await AdminService.approveTutor(String(req.params['id']), req.body.isApproved ?? true);
+  const result = await AdminService.approveTutor(
+    String(req.params['id']),
+    req.body.isApproved ?? true,
+    req.body.rejectionReason,
+  );
   sendResponse(res, { statusCode: 200, success: true, message: 'Tutor approval updated.', data: result });
 };
 

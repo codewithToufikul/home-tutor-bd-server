@@ -10,8 +10,13 @@ export type TTuitionJobStatus = (typeof TUITION_JOB_STATUSES)[number];
 export type TApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 export interface ITuitionLocation {
+  division?: string;
   district: string;
+  upazila?: string;
+  union?: string;
+  ward?: string;
   area: string;
+  detailedAddress?: string;
 }
 
 /** Auto Matching Score ব্রেকডাউন — কোন criteria-তে কত পয়েন্ট পেয়েছে */
@@ -48,6 +53,15 @@ export interface ITuitionJob {
   tutoringDays?: string[];
   numStudents?: number;
   requirements?: string[];
+
+  // ─── Structured Contact & Preference Fields ────────────────────
+  phone?: string;
+  whatsappNumber?: string;
+  contactName?: string;
+  universityPreference?: string;
+  studentGender?: string;
+  duration?: string;
+  startTime?: string;
 
   // ─── Auto Matching ─────────────────────────────────────────────
   /** Tutor-এর পছন্দের সময়: morning | afternoon | evening */

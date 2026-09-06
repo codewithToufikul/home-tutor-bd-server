@@ -3,7 +3,7 @@ import type { Secret, SignOptions } from 'jsonwebtoken';
 
 export interface TJwtPayload {
   userId: string;
-  email: string;
+  email?: string | undefined;
   role: string;
 }
 

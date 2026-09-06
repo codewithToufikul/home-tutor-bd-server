@@ -1,7 +1,10 @@
+import fs from 'node:fs';
 import type { ConnectionOptions } from 'bullmq';
 
-const socketPath = process.env.REDIS_SOCKET_PATH;
-const redisUrlString = process.env.REDIS_URL;
+const rawSocketPath = process.env.REDIS_SOCKET_PATH;
+// সকেট ফাইল যদি লোকাল ফাইলসিস্টেমে বিদ্যমান থাকে (cPanel-এ), তাহলে সকেট দিয়ে কানেক্ট হবে
+const socketPath = rawSocketPath && fs.existsSync(rawSocketPath) ? rawSocketPath : undefined;
+const redisUrlString = process.env.REDIS_URL || (!socketPath ? 'redis://127.0.0.1:6379' : undefined);
 
 /**
  * REDIS_SOCKET_PATH অথবা REDIS_URL সেট থাকলে BullMQ সক্রিয় থাকবে।
@@ -33,8 +36,8 @@ const parseRedisUrl = (urlStr: string): ConnectionOptions => {
 
 /**
  * BullMQ Connection Options (ioredis under the hood)
- * - cPanel: Connects instantly via Unix Socket (`path: '/home/hometuto/.cagefs/tmp/redis.sock'`)
- * - Local / TCP: Connects via host/port
+ * - cPanel: Connects instantly via Unix Socket (`path: '/home/hometuto/.cagefs/tmp/redis.sock'`) when file exists.
+ * - Local Machine (Mac): Connects via host/port (`redis://127.0.0.1:6379`).
  */
 export const redisConnectionOptions: ConnectionOptions | null = socketPath
   ? {

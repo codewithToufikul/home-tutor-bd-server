@@ -12,6 +12,7 @@ router.get('/me/hire-requests', auth('tutor'), TutorController.getMyHireRequests
 
 router.post('/profile', auth('tutor'), TutorController.createMyProfile);
 router.patch('/profile', auth('tutor'), TutorController.updateMyProfile);
+router.post('/verification', auth('tutor'), TutorController.submitVerification);
 
 router.get('/:id', TutorController.getTutorById);
 router.post('/:id/reviews', auth('student', 'guardian'), TutorController.addReview);

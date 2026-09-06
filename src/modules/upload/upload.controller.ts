@@ -1,5 +1,5 @@
 import type { Response } from 'express';
-import { uploadToCloudinary } from '../../config/cloudinary.js';
+import { uploadToR2 } from '../../config/r2.js';
 import { AppError } from '../../errors/AppError.js';
 import type { CustomRequest } from '../../middlewares/auth.middleware.js';
 import { sendResponse } from '../../utils/response.js';
@@ -11,15 +11,20 @@ const uploadSingle = async (req: CustomRequest, res: Response) => {
 
   const folder = (req.body.folder as string) || 'home-tutor-bd/documents';
 
-  const result = await uploadToCloudinary(req.file.buffer, folder, 'auto');
+  const result = await uploadToR2(
+    req.file.buffer,
+    folder,
+    req.file.originalname,
+    req.file.mimetype,
+  );
 
   sendResponse(res, {
     statusCode: 200,
     success: true,
-    message: 'File uploaded to Cloudinary successfully.',
+    message: 'File uploaded to R2 successfully.',
     data: {
-      url: result.secure_url,
-      publicId: result.public_id,
+      url: result.url,
+      key: result.key,
     },
   });
 };
@@ -34,7 +39,7 @@ const uploadMultiple = async (req: CustomRequest, res: Response) => {
   const folder = (req.body.folder as string) || 'home-tutor-bd/documents';
 
   const uploadPromises = files.map((file) =>
-    uploadToCloudinary(file.buffer, folder, 'auto'),
+    uploadToR2(file.buffer, folder, file.originalname, file.mimetype),
   );
 
   const results = await Promise.all(uploadPromises);
@@ -42,10 +47,10 @@ const uploadMultiple = async (req: CustomRequest, res: Response) => {
   sendResponse(res, {
     statusCode: 200,
     success: true,
-    message: 'Files uploaded to Cloudinary successfully.',
+    message: 'Files uploaded to R2 successfully.',
     data: results.map((r) => ({
-      url: r.secure_url,
-      publicId: r.public_id,
+      url: r.url,
+      key: r.key,
     })),
   });
 };

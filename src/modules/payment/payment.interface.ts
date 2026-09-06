@@ -1,66 +1,30 @@
 import type { Model, Types } from 'mongoose';
-import {
-  PAYMENT_METHODS,
-  PAYMENT_STATUSES,
-  TRANSACTION_STATUSES,
-  TRANSACTION_TYPES,
-  WITHDRAWAL_STATUSES,
-} from './payment.constants.js';
 
-export type TTransactionType = (typeof TRANSACTION_TYPES)[number];
-export type TTransactionStatus = (typeof TRANSACTION_STATUSES)[number];
-export type TPaymentMethod = (typeof PAYMENT_METHODS)[number];
-export type TPaymentStatus = (typeof PAYMENT_STATUSES)[number];
-export type TWithdrawalStatus = (typeof WITHDRAWAL_STATUSES)[number];
-
-export interface IWallet {
-  _id?: Types.ObjectId;
-  userId: Types.ObjectId;
-  balance: number;
-  creditBalance: number;
-  withdrawableBalance: number;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-export type WalletModel = Model<IWallet>;
-
-export interface ITransaction {
-  _id?: Types.ObjectId;
-  userId: Types.ObjectId;
-  type: TTransactionType;
-  amount: number;
-  balanceBefore: number;
-  balanceAfter: number;
-  reference?: string;
-  status: TTransactionStatus;
-  metadata?: Record<string, unknown>;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-export type TransactionModel = Model<ITransaction>;
+export type TPaymentMethod = 'bkash' | 'nagad' | 'rocket' | 'bank';
+export type TPaymentStatus = 'pending' | 'approved' | 'rejected';
+export type TPaymentType = 'tuition_fee' | 'verification_fee' | 'wallet_recharge';
 
 export interface IPayment {
-  _id?: Types.ObjectId;
-  userId: Types.ObjectId;
+  _id?: Types.ObjectId | string;
+  userId: Types.ObjectId | string;
+  tuitionJobId?: Types.ObjectId | string;
+  applicationId?: Types.ObjectId | string;
+  paymentType: TPaymentType;
   amount: number;
+  payableAmount: number;
   paymentMethod: TPaymentMethod;
+  senderNumber: string;
   transactionId: string;
+  receiptUrl?: string;
+  receiptPublicId?: string;
   status: TPaymentStatus;
+  rejectionReason?: string;
+  approvedBy?: Types.ObjectId | string;
+  approvedAt?: Date;
+  invoiceNumber?: string;
+  notes?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
-export type PaymentModel = Model<IPayment>;
 
-export interface IWithdrawal {
-  _id?: Types.ObjectId;
-  userId: Types.ObjectId;
-  amount: number;
-  paymentMethod: TPaymentMethod;
-  accountNumber: string;
-  status: TWithdrawalStatus;
-  reviewedBy?: Types.ObjectId | null;
-  reviewedAt?: Date | null;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-export type WithdrawalModel = Model<IWithdrawal>;
+export type PaymentModel = Model<IPayment>;

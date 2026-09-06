@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import crypto from 'node:crypto';
 import { AppError } from '../../errors/AppError.js';
 import { addMatchingJob } from '../../jobs/matching.queue.js';
 import { RuleBasedMatcher } from '../../services/matching.service.js';
@@ -331,7 +332,14 @@ const getJobById = async (id: string) => {
 
 const createJob = async (
   postedBy?: string,
-  payload: Partial<ITuitionJob> & { phone?: string; name?: string; location?: any } = {},
+  payload: Partial<ITuitionJob> & {
+    phone?: string;
+    name?: string;
+    contactName?: string;
+    whatsappNumber?: string;
+    universityPreference?: string;
+    location?: any;
+  } = {},
 ) => {
   let finalPostedBy = postedBy;
 
@@ -342,9 +350,9 @@ const createJob = async (
         const cleanPhone = payload.phone.replace(/[^0-9]/g, '');
         const randomPass = `Guest@${cleanPhone || '1234'}`;
         existingUser = await User.create({
-          name: payload.name || `Guardian (${cleanPhone.slice(-4) || 'Guest'})`,
+          name: payload.contactName || payload.name || `Guardian (${cleanPhone.slice(-4) || 'Guest'})`,
           phone: payload.phone,
-          email: `guardian_${cleanPhone || Date.now()}@hometutorbd.com`,
+          // No auto-generated email: will be undefined and display as N/A
           password: randomPass,
           role: 'guardian',
           isEmailVerified: false,
@@ -352,6 +360,14 @@ const createJob = async (
           isApproved: true,
           status: 'active',
         });
+
+        // Instant push notification to all admins & moderators
+        NotificationService.notifyStaffOnNewUserRegistration({
+          _id: existingUser._id,
+          name: existingUser.name,
+          phone: existingUser.phone,
+          role: 'guardian',
+        }).catch((err) => console.warn('⚠️ Staff guest registration notification error:', err));
       }
       finalPostedBy = String(existingUser._id);
     } else {
@@ -366,17 +382,22 @@ const createJob = async (
     throw new AppError(400, 'Could not determine user account for this tutor request.');
   }
 
-  // Normalize location
-  let location = { district: 'Dhaka', area: 'All Areas' };
+  // Normalize location — preserve all BD Geo fields
+  let location: any = { district: 'Dhaka', area: 'All Areas' };
   if (typeof payload.location === 'object' && payload.location !== null) {
     location = {
-      district: payload.location.district || 'Dhaka',
-      area: payload.location.area || 'All Areas',
+      division:        payload.location.division || '',
+      district:        payload.location.district || 'Dhaka',
+      upazila:         payload.location.upazila || '',
+      union:           payload.location.union || '',
+      ward:            payload.location.ward || '',
+      area:            payload.location.area || 'All Areas',
+      detailedAddress: payload.location.detailedAddress || '',
     };
   } else if (typeof payload.location === 'string') {
     location = {
       district: payload.location || 'Dhaka',
-      area: (payload as any).area || 'All Areas',
+      area:     (payload as any).area || 'All Areas',
     };
   }
 
@@ -402,6 +423,14 @@ const createJob = async (
     subjects,
     studentClass: payload.studentClass || 'Class 10',
     medium: payload.medium || 'Bangla Medium',
+    tuitionType: payload.tuitionType || 'Home Tuition',
+    genderPreference: payload.genderPreference || 'Any',
+    tutoringDays: Array.isArray(payload.tutoringDays) ? payload.tutoringDays : [payload.tutoringDays || '3 Days/Week'],
+    universityPreference: payload.universityPreference || '',
+    phone: payload.phone || '',
+    whatsappNumber: payload.whatsappNumber || '',
+    contactName: payload.contactName || payload.name || '',
+    description: payload.description || '',
     status: 'Open',
     approvalStatus: 'Approved',
   });
@@ -440,19 +469,59 @@ const createJob = async (
 const updateJob = async (id: string, userId: string, userRole: string, payload: Partial<ITuitionJob>) => {
   const job = await TuitionJob.findById(id);
   if (!job) throw new AppError(404, 'Tuition job not found!');
-  if (userRole !== 'admin' && String(job.postedBy) !== userId) {
+  const isStaff = ['admin', 'super_admin', 'moderator'].includes(userRole);
+  if (!isStaff && String(job.postedBy) !== userId) {
     throw new AppError(403, 'You are not authorized to update this job!');
   }
-  const updatedJob = await TuitionJob.findByIdAndUpdate(id, { $set: payload }, { new: true });
+
+  const cleanPayload: any = { ...payload };
+
+  // Sanitize universityPreference
+  if (Array.isArray(cleanPayload.universityPreference)) {
+    cleanPayload.universityPreference = cleanPayload.universityPreference.flat(Infinity).find((u: any) => typeof u === 'string' && u.trim() !== '') || '';
+  } else if (cleanPayload.universityPreference !== undefined) {
+    cleanPayload.universityPreference = String(cleanPayload.universityPreference || '').trim();
+  }
+
+  // Sanitize requirements
+  if (cleanPayload.requirements !== undefined) {
+    if (Array.isArray(cleanPayload.requirements)) {
+      cleanPayload.requirements = cleanPayload.requirements.flat(Infinity).filter((r: any) => typeof r === 'string' && r.trim() !== '');
+    } else if (typeof cleanPayload.requirements === 'string' && cleanPayload.requirements.trim()) {
+      cleanPayload.requirements = [cleanPayload.requirements.trim()];
+    } else {
+      cleanPayload.requirements = [];
+    }
+  }
+
+  // Sanitize tutoringDays
+  if (cleanPayload.tutoringDays !== undefined) {
+    if (Array.isArray(cleanPayload.tutoringDays)) {
+      cleanPayload.tutoringDays = cleanPayload.tutoringDays.flat(Infinity).filter((d: any) => typeof d === 'string' && d.trim() !== '');
+    } else if (typeof cleanPayload.tutoringDays === 'string' && cleanPayload.tutoringDays.trim()) {
+      cleanPayload.tutoringDays = [cleanPayload.tutoringDays.trim()];
+    }
+  }
+
+  // Sanitize subjects
+  if (cleanPayload.subjects !== undefined) {
+    if (Array.isArray(cleanPayload.subjects)) {
+      cleanPayload.subjects = cleanPayload.subjects.flat(Infinity).filter((s: any) => typeof s === 'string' && s.trim() !== '');
+    } else if (typeof cleanPayload.subjects === 'string' && cleanPayload.subjects.trim()) {
+      cleanPayload.subjects = [cleanPayload.subjects.trim()];
+    }
+  }
+
+  const updatedJob = await TuitionJob.findByIdAndUpdate(id, { $set: cleanPayload }, { new: true });
 
   // Re-run matching if core criteria modified
   if (
-    payload.subjects ||
-    payload.location ||
-    payload.salary ||
-    payload.medium ||
-    payload.studentClass ||
-    payload.genderPreference
+    cleanPayload.subjects ||
+    cleanPayload.location ||
+    cleanPayload.salary ||
+    cleanPayload.medium ||
+    cleanPayload.studentClass ||
+    cleanPayload.genderPreference
   ) {
     addMatchingJob({
       jobId: id,
@@ -466,7 +535,8 @@ const updateJob = async (id: string, userId: string, userRole: string, payload: 
 const deleteJob = async (id: string, userId: string, userRole: string) => {
   const job = await TuitionJob.findById(id);
   if (!job) throw new AppError(404, 'Tuition job not found!');
-  if (userRole !== 'admin' && String(job.postedBy) !== userId) {
+  const isStaff = ['admin', 'super_admin', 'moderator'].includes(userRole);
+  if (!isStaff && String(job.postedBy) !== userId) {
     throw new AppError(403, 'You are not authorized to delete this job!');
   }
   await TuitionJob.findByIdAndDelete(id);
@@ -480,6 +550,10 @@ const applyToJob = async (
     expectedSalary?: number;
     coverLetter?: string;
     availableTime?: string[];
+    signatureImage?: string;
+    ipAddress?: string;
+    userAgent?: string;
+    agreedToTerms?: boolean;
   } = {},
 ) => {
   const job = await TuitionJob.findById(jobId);
@@ -489,11 +563,29 @@ const applyToJob = async (
   const existing = await Application.findOne({ jobId, tutorId: tutorUserId });
   if (existing) throw new AppError(400, 'You have already applied for this job!');
 
+  // Strict verification check: Tutor must be verified by admin
+  const tutorProfile = await Tutor.findOne({ userId: tutorUserId });
+  if (!tutorProfile) {
+    throw new AppError(400, 'অনুগ্রহ করে প্রথমে আপনার টিউটর প্রোফাইল সম্পূর্ণ করুন।');
+  }
+
+  if (!tutorProfile.isVerified) {
+    if (!tutorProfile.nidCard || !tutorProfile.studentIdCard) {
+      throw new AppError(
+        403,
+        'টিউশন জবে আবেদন করার জন্য আপনার NID কার্ড এবং স্টুডেন্ট/টিউটর আইডি কার্ড আপলোড করে প্রোফাইল ভেরিফাই করতে হবে।',
+      );
+    }
+    throw new AppError(
+      403,
+      'আপনার ভেরিফিকেশন আবেদনটি বর্তমানে অ্যাডমিন রিভিউতে রয়েছে। অ্যাডমিন অনুমোদন করার পর আপনি টিউশন জবে আবেদন করতে পারবেন।',
+    );
+  }
+
   // Calculate Match Score for this tutor
   let matchScore = 0;
   let isAutoShortlisted = false;
 
-  const tutorProfile = await Tutor.findOne({ userId: tutorUserId });
   if (tutorProfile) {
     const matcher = new RuleBasedMatcher();
     const matchResult = await matcher.calculate(job.toObject(), tutorProfile.toObject());
@@ -507,19 +599,73 @@ const applyToJob = async (
     }
   }
 
+  const tutorUser = await User.findById(tutorUserId);
+  const salary = Number(payload.expectedSalary ?? job.salary);
+  const mediaFee = Math.round(salary * 0.60); // 60% of Tuition Monthly Salary
+
+  const customJobId = job.customId || `JOB-${String(job._id).slice(-6).toUpperCase()}`;
+  const timestampHash = Date.now().toString(36).toUpperCase();
+  const contractId = `TMC/${customJobId}/${timestampHash}`;
+  const signedAt = new Date();
+
+  const rawIp = payload.ipAddress || '127.0.0.1';
+  const rawUserAgent = payload.userAgent || 'Web Browser';
+
+  // Generate SHA-256 Cryptographic Lock Code
+  const securityHash = crypto
+    .createHash('sha256')
+    .update(`${tutorUserId}|${jobId}|${salary}|${mediaFee}|${rawIp}|${signedAt.toISOString()}`)
+    .digest('hex');
+
+  const locArea = typeof job.location === 'object' ? (job.location?.area || '') : ((job as any).area || '');
+  const locDistrict = typeof job.location === 'object' ? (job.location?.district || '') : (typeof job.location === 'string' ? job.location : '');
+
   const application = await Application.create({
     jobId,
     tutorId: tutorUserId,
-    expectedSalary: payload.expectedSalary ?? job.salary,
+    expectedSalary: salary,
     coverLetter: payload.coverLetter || '',
     availableTime: payload.availableTime || [],
     matchScore,
     isAutoShortlisted,
     status: 'Pending',
+
+    // Digital Legal Contract Deed Data
+    contractId,
+    signatureImage: payload.signatureImage || '',
+    ipAddress: rawIp,
+    userAgent: rawUserAgent,
+    signedAt,
+    mediaFee,
+    securityHash,
+    agreedToTerms: Boolean(payload.agreedToTerms),
+    tutorSnapshot: {
+      name: tutorUser?.name || 'Tutor',
+      email: tutorUser?.email || '',
+      phone: tutorUser?.phone || '',
+      nid: tutorProfile.nid || '',
+      nidCard: tutorProfile.nidCard || '',
+      studentIdCard: tutorProfile.studentIdCard || '',
+      university: tutorProfile.university || '',
+      department: tutorProfile.department || '',
+      qualification: tutorProfile.qualification || '',
+      permanentAddress: (tutorProfile as any)?.permanentAddress || (tutorProfile?.location ? `${tutorProfile.location?.area || ''}, ${tutorProfile.location?.district || ''}` : ''),
+      emergencyPhone: (tutorProfile as any)?.emergencyPhone || (tutorProfile as any)?.parentPhone || tutorUser?.phone || '',
+      avatar: tutorUser?.avatar || '',
+    },
+    tuitionSnapshot: {
+      customId: customJobId,
+      studentClass: job.studentClass || '',
+      medium: job.medium || '',
+      salary,
+      mediaFee,
+      location: locDistrict,
+      area: locArea,
+      subjects: job.subjects || [],
+    },
   });
 
   // Notify guardian who posted the job
-  const tutorUser = await User.findById(tutorUserId);
   const tutorName = tutorUser?.name || 'একজন টিউটর';
 
   await NotificationService.createNotification({
@@ -559,7 +705,8 @@ const getShortlistedTutors = async (jobId: string, userId: string, userRole: str
 
   if (!job) throw new AppError(404, 'Tuition job not found!');
 
-  if (userRole !== 'admin' && String(job.postedBy) !== userId) {
+  const isStaff = ['admin', 'super_admin', 'moderator'].includes(userRole);
+  if (!isStaff && String(job.postedBy) !== userId) {
     throw new AppError(403, 'You are not authorized to view shortlisted tutors for this job.');
   }
 
@@ -603,25 +750,27 @@ const getShortlistedTutors = async (jobId: string, userId: string, userRole: str
     }
   }
 
-  // Privacy Protection: Mask sensitive contact/personal details (name, photo, phone, email) before confirmation
+  // Privacy Protection: Mask sensitive contact details (phone, email, NID) before confirmation
+  const isStaffUser = ['admin', 'super_admin', 'moderator'].includes(userRole);
   const sanitizedShortlist = (job.shortlistedTutors || []).map((st: any) => {
     const rawObj = st.toObject ? st.toObject() : st;
     const tutorDoc = rawObj.tutorId || {};
     const userDoc = tutorDoc.userId || {};
 
-    if (userRole !== 'admin') {
-      const tutorAnonId = String(userDoc._id || tutorDoc._id || 'TUTOR').slice(-4).toUpperCase();
+    if (!isStaffUser) {
       return {
         ...rawObj,
         tutorId: {
           ...tutorDoc,
           nid: undefined,
+          nidCard: undefined,
+          studentIdCard: undefined,
           cv: undefined,
           certificates: undefined,
           userId: {
             _id: userDoc._id,
-            name: `Candidate Tutor #${tutorAnonId}`,
-            avatar: '', // Masked until confirmed
+            name: userDoc.name || 'Registered Tutor',
+            avatar: userDoc.avatar || '',
             phone: '🔒 টিউশন নিশ্চিত করার পর দৃশ্যমান হবে',
             email: '🔒 Hidden',
             status: userDoc.status,
@@ -643,7 +792,8 @@ const rematchJob = async (jobId: string, userId: string, userRole: string) => {
   const job = await TuitionJob.findById(jobId);
   if (!job) throw new AppError(404, 'Tuition job not found!');
 
-  if (userRole !== 'admin' && String(job.postedBy) !== userId) {
+  const isStaff = ['admin', 'super_admin', 'moderator'].includes(userRole);
+  if (!isStaff && String(job.postedBy) !== userId) {
     throw new AppError(403, 'You are not authorized to re-run matching for this job.');
   }
 

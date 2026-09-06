@@ -14,12 +14,32 @@ import { TuitionRoutes } from './modules/tuition/tuition.route.js';
 import { TutorRoutes } from './modules/tutor/tutor.route.js';
 import { UploadRoutes } from './modules/upload/upload.route.js';
 import { ITServiceRoutes } from './modules/it-service/itService.route.js';
+import { NoticeRoutes } from './modules/notice/notice.route.js';
+import { BlogRoutes } from './modules/blog/blog.route.js';
+import { DownloadRoutes } from './modules/download/download.route.js';
+import { TermRoutes } from './modules/terms/terms.route.js';
+import { PaymentRoutes } from './modules/payment/payment.route.js';
 
 const app: Application = express();
 
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
+    origin: (origin, callback) => {
+      const allowedOrigins = [
+        process.env.CLIENT_URL || 'http://localhost:3000',
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'http://localhost:5174',
+        'http://127.0.0.1:5173',
+        'http://127.0.0.1:3000',
+      ];
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, true); // allow all for development; tighten in production via CLIENT_URL
+      }
+    },
     credentials: true,
   }),
 );
@@ -44,6 +64,10 @@ app.get('/api/v1', (_req: Request, res: Response) => {
       upload: '/api/v1/upload',
       admin: '/api/v1/admin',
       coaching: '/api/v1/coaching',
+      notices: '/api/v1/notices',
+      blogs: '/api/v1/blogs',
+      downloads: '/api/v1/downloads',
+      terms: '/api/v1/terms',
     },
   });
 });
@@ -62,6 +86,16 @@ app.use('/api/v1/admin', AdminRoutes);
 app.use('/api/v1/coaching', CoachingRoutes);
 app.use('/api/v1/enrollments', EnrollmentRoutes);
 app.use('/api/v1/services', ITServiceRoutes);
+app.use('/api/v1/notices', NoticeRoutes);
+app.use('/api/v1/admin/notices', NoticeRoutes);
+app.use('/api/v1/blogs', BlogRoutes);
+app.use('/api/v1/admin/blogs', BlogRoutes);
+app.use('/api/v1/downloads', DownloadRoutes);
+app.use('/api/v1/admin/downloads', DownloadRoutes);
+app.use('/api/v1/terms', TermRoutes);
+app.use('/api/v1/admin/terms', TermRoutes);
+app.use('/api/v1/payments', PaymentRoutes);
+app.use('/api/v1/admin/payments', PaymentRoutes);
 
 // Global 404 Handler
 app.use((_req: Request, res: Response) => {

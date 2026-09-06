@@ -9,7 +9,8 @@ export type NotificationType =
   | 'tutor_verification'
   | 'payment'
   | 'auto_match'
-  | 'system';
+  | 'system'
+  | 'download';
 
 export interface INotification {
   _id?: Types.ObjectId | string;

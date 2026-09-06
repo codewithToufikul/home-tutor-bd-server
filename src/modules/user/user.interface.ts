@@ -8,13 +8,14 @@ export interface IUser {
   _id?: Types.ObjectId;
   name: string;
   username?: string;
-  email: string;
+  email?: string;
   phone?: string;
   password?: string;
   role: TRole;
   permissions?: string[];
   createdBy?: Types.ObjectId;
   avatar?: string;
+  tradeLicense?: string;
   fcmTokens?: string[];
   isEmailVerified: boolean;
   isPhoneVerified: boolean;

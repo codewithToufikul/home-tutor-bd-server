@@ -37,6 +37,17 @@ const getJobApplications = async (req: CustomRequest, res: Response) => {
   sendResponse(res, { statusCode: 200, success: true, message: 'Job applications retrieved successfully.', data: result });
 };
 
+const getContractDeedData = async (req: CustomRequest, res: Response) => {
+  const result = await ApplicationService.getContractDeed(String(req.params['id']));
+  sendResponse(res, { statusCode: 200, success: true, message: 'Contract deed retrieved successfully.', data: result });
+};
+
+const getContractDeedHtml = async (req: CustomRequest, res: Response) => {
+  const html = await ApplicationService.renderContractDeedHtml(String(req.params['id']));
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+};
+
 export const ApplicationController = {
   getMyApplications,
   getApplicationById,
@@ -44,4 +55,7 @@ export const ApplicationController = {
   rejectApplication,
   withdrawApplication,
   getJobApplications,
+  getContractDeedData,
+  getContractDeedHtml,
 };
+
