@@ -48,6 +48,9 @@ export interface ITuitionJob {
   subjects: string[];
   location: ITuitionLocation;
   salary: number;
+  salaryMax?: number | undefined;
+  salaryRange?: string | undefined;
+  negotiable?: boolean | undefined;
   medium: string;
   genderPreference: TGenderPreference;
   tutoringDays?: string[];
@@ -81,6 +84,8 @@ export interface ITuitionJob {
 
   status: TTuitionJobStatus;
   approvalStatus: TApprovalStatus;
+  assignedTutorId?: Types.ObjectId;
+  activeDemoCount?: number;
   createdAt?: Date;
   updatedAt?: Date;
 }

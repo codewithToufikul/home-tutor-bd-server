@@ -37,8 +37,12 @@ const getPendingJobs = async (_req: Request, res: Response) => {
   sendResponse(res, { statusCode: 200, success: true, message: 'Pending jobs retrieved.', data: result });
 };
 
-const approveJob = async (req: Request, res: Response) => {
-  const result = await AdminService.approveJob(String(req.params['id']), req.body.approvalStatus || 'Approved');
+const approveJob = async (req: CustomRequest, res: Response) => {
+  const result = await AdminService.approveJob(
+    String(req.params['id']),
+    req.body.approvalStatus || 'Approved',
+    req.user?.role,
+  );
   sendResponse(res, { statusCode: 200, success: true, message: 'Job approval updated.', data: result });
 };
 

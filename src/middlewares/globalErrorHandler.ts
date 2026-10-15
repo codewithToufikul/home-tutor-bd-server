@@ -38,6 +38,24 @@ export const globalErrorHandler: ErrorRequestHandler = (err, _req, res, _next) =
     statusCode = simplifiedError.statusCode;
     message = simplifiedError.message;
     errorSources = simplifiedError.errors;
+  } else if (err?.name === 'TokenExpiredError') {
+    statusCode = 401;
+    message = 'jwt expired';
+    errorSources = [
+      {
+        path: '',
+        message: 'Access token has expired. Please refresh your token.',
+      },
+    ];
+  } else if (err?.name === 'JsonWebTokenError' || err?.name === 'NotBeforeError') {
+    statusCode = 401;
+    message = 'Invalid token';
+    errorSources = [
+      {
+        path: '',
+        message: 'Authentication token is invalid or corrupted. Please log in again.',
+      },
+    ];
   } else if (err instanceof AppError) {
     statusCode = err.statusCode;
     message = err.message;

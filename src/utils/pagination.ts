@@ -83,7 +83,7 @@ export const buildCursorMatchStage = (
   switch (sortMode) {
     case 'default':
     case 'rating_desc': {
-      // Sort: isPremium DESC, rating DESC, _id ASC (tiebreaker)
+      // Sort: isPremium DESC, rating DESC, _id DESC (tiebreaker, descending)
       const cursorIsPremium = decoded['isPremium'] as boolean ?? false;
       const cursorRating = decoded['rating'] as number ?? 0;
       return {
@@ -92,8 +92,8 @@ export const buildCursorMatchStage = (
           { isPremium: { $lt: cursorIsPremium } },
           // Same premium tier, lower rating
           { isPremium: cursorIsPremium, rating: { $lt: cursorRating } },
-          // Same premium + rating, next _id (tiebreaker, ascending)
-          { isPremium: cursorIsPremium, rating: cursorRating, _id: { $gt: cursorId } },
+          // Same premium + rating, next _id (tiebreaker, descending)
+          { isPremium: cursorIsPremium, rating: cursorRating, _id: { $lt: cursorId } },
         ],
       };
     }
@@ -159,13 +159,15 @@ export const resolveSortMode = (sortBy?: string, sortOrder?: string): SortMode =
 export const buildSortStage = (mode: SortMode): Record<string, 1 | -1> => {
   switch (mode) {
     case 'default':
+      // Premium first, then newest/latest first
+      return { isPremium: -1, createdAt: -1, _id: -1 };
     case 'rating_desc':
-      return { isPremium: -1, rating: -1, _id: 1 };
+      return { isPremium: -1, rating: -1, createdAt: -1, _id: -1 };
     case 'salary_asc':
-      return { salary: 1, _id: 1 };
+      return { salary: 1, createdAt: -1, _id: -1 };
     case 'salary_desc':
-      return { salary: -1, _id: 1 };
+      return { salary: -1, createdAt: -1, _id: -1 };
     case 'createdAt_desc':
-      return { _id: -1 };
+      return { createdAt: -1, _id: -1 };
   }
 };

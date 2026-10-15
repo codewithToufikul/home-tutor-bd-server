@@ -29,7 +29,68 @@ const getApplicationById = async (id: string) => {
   return application;
 };
 
-const acceptApplication = async (id: string, userId: string, userRole: string) => {
+const demoConfirmApplication = async (id: string, userId: string, userRole: string) => {
+  const application = await Application.findById(id).populate('jobId');
+  if (!application) {
+    throw new AppError(404, 'Application not found!');
+  }
+
+  const job = application.jobId as unknown as { postedBy: string; _id: string; customId?: string; studentClass?: string; medium?: string };
+
+  const isStaff = ['admin', 'super_admin', 'moderator'].includes(userRole);
+  if (!isStaff && String(job.postedBy) !== userId) {
+    throw new AppError(403, 'You are not authorized to confirm demo for this application!');
+  }
+
+  // 🛡️ Moderator Protection: Moderator cannot manage applications on jobs created by Admin or Super Admin
+  if (userRole === 'moderator') {
+    const posterUser = await User.findById(job.postedBy).select('role');
+    if (posterUser && ['admin', 'super_admin'].includes(posterUser.role)) {
+      throw new AppError(403, 'মডারেটর হিসেবে আপনি এডমিনের তৈরি করা টিউশন পোস্টের আবেদন ম্যানেজ করতে পারবেন না।');
+    }
+  }
+
+  application.status = 'Demo_Confirmed';
+  application.demoConfirmedAt = new Date();
+  await application.save();
+
+  // Recalculate and update activeDemoCount on TuitionJob
+  const demoCount = await Application.countDocuments({
+    jobId: job._id,
+    status: { $in: ['Demo_Confirmed', 'Demo_Completed'] },
+  });
+  await TuitionJob.findByIdAndUpdate(job._id, { activeDemoCount: demoCount });
+
+  try {
+    const jobMedium = (job as any)?.medium || 'টিউশন';
+    await NotificationService.createNotification({
+      userId: String(application.tutorId),
+      type: 'job_approval',
+      title: 'ডেমো ক্লাসের জন্য নির্বাচিত হয়েছেন 🎯',
+      message: `অভিনন্দন! আপনার ${jobMedium} (${(job as any)?.studentClass || ''}) টিউশনের আবেদনে অভিভাবক আপনাকে ডেমো ক্লাসের জন্য কনফার্ম করেছেন। অনুগ্রহ করে অভিভাবকের সাথে যোগাযোগ করে ডেমো শিডিউল করুন।`,
+      referenceId: String(job._id),
+      referenceType: 'TuitionJob',
+    });
+
+    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } });
+    for (const staff of staffUsers) {
+      await NotificationService.createNotification({
+        userId: String(staff._id),
+        type: 'job_approval',
+        title: '🎯 ডেমো ক্লাস কনফার্ম করা হয়েছে',
+        message: `টিউশন #${(job as any)?.customId || job._id}-এ একজন টিউটরকে ডেমো ক্লাসের জন্য নির্বাচন করা হয়েছে।`,
+        referenceId: String(job._id),
+        referenceType: 'TuitionJob',
+      });
+    }
+  } catch (err) {
+    console.warn('⚠️ Demo confirm notification error:', err);
+  }
+
+  return application;
+};
+
+const demoCompleteApplication = async (id: string, userId: string, userRole: string) => {
   const application = await Application.findById(id).populate('jobId');
   if (!application) {
     throw new AppError(404, 'Application not found!');
@@ -39,22 +100,103 @@ const acceptApplication = async (id: string, userId: string, userRole: string) =
 
   const isStaff = ['admin', 'super_admin', 'moderator'].includes(userRole);
   if (!isStaff && String(job.postedBy) !== userId) {
-    throw new AppError(403, 'You are not authorized to accept this application!');
+    throw new AppError(403, 'You are not authorized to update this application!');
   }
 
-  application.status = 'Accepted';
+  // 🛡️ Moderator Protection: Moderator cannot manage applications on jobs created by Admin or Super Admin
+  if (userRole === 'moderator') {
+    const posterUser = await User.findById(job.postedBy).select('role');
+    if (posterUser && ['admin', 'super_admin'].includes(posterUser.role)) {
+      throw new AppError(403, 'মডারেটর হিসেবে আপনি এডমিনের তৈরি করা টিউশন পোস্টের আবেদন ম্যানেজ করতে পারবেন না।');
+    }
+  }
+
+  application.status = 'Demo_Completed';
+  application.demoCompletedAt = new Date();
   await application.save();
 
-  await TuitionJob.findByIdAndUpdate(job._id, { status: 'Matched' });
+  return application;
+};
+
+const finalConfirmApplication = async (id: string, userId: string, userRole: string) => {
+  const application = await Application.findById(id).populate('jobId');
+  if (!application) {
+    throw new AppError(404, 'Application not found!');
+  }
+
+  const job = application.jobId as unknown as { postedBy: string; _id: string; customId?: string; studentClass?: string; medium?: string };
+
+  const isStaff = ['admin', 'super_admin', 'moderator'].includes(userRole);
+  if (!isStaff && String(job.postedBy) !== userId) {
+    throw new AppError(403, 'You are not authorized to finalize this application!');
+  }
+
+  // 🛡️ Moderator Protection: Moderator cannot manage applications on jobs created by Admin or Super Admin
+  if (userRole === 'moderator') {
+    const posterUser = await User.findById(job.postedBy).select('role');
+    if (posterUser && ['admin', 'super_admin'].includes(posterUser.role)) {
+      throw new AppError(403, 'মডারেটর হিসেবে আপনি এডমিনের তৈরি করা টিউশন পোস্টের আবেদন কনফার্ম করতে পারবেন না।');
+    }
+  }
+
+  // 1. Mark selected application as Accepted (Final Hired)
+  application.status = 'Accepted';
+  application.finalConfirmedAt = new Date();
+  await application.save();
+
+  // 2. Mark tuition job as Matched and set assignedTutorId
+  await TuitionJob.findByIdAndUpdate(job._id, {
+    status: 'Matched',
+    assignedTutorId: application.tutorId,
+  });
+
+  // 3. Mark other pending/demo applications for this job as Rejected with reason
+  const otherApps = await Application.find({
+    jobId: job._id,
+    _id: { $ne: application._id },
+    status: { $in: ['Pending', 'Demo_Confirmed', 'Demo_Completed'] },
+  });
+
+  if (otherApps.length > 0) {
+    await Application.updateMany(
+      {
+        jobId: job._id,
+        _id: { $ne: application._id },
+        status: { $in: ['Pending', 'Demo_Confirmed', 'Demo_Completed'] },
+      },
+      {
+        $set: {
+          status: 'Rejected',
+          rejectionReason: 'এই টিউশনের জন্য অন্য একজন টিউটর চূড়ান্তভাবে নির্বাচিত হয়েছেন।',
+        },
+      }
+    );
+
+    // Notify other candidates politely
+    for (const otherApp of otherApps) {
+      try {
+        await NotificationService.createNotification({
+          userId: String(otherApp.tutorId),
+          type: 'application',
+          title: 'টিউশন আপডেট',
+          message: `টিউশন #${(job as any)?.customId || 'Job'}-এর জন্য চূড়ান্ত টিউটর নির্বাচন সম্পন্ন হয়েছে। আপনার আগ্রহের জন্য ধন্যবাদ!`,
+          referenceId: String(job._id),
+          referenceType: 'TuitionJob',
+        });
+      } catch (err) {
+        // Non-fatal
+      }
+    }
+  }
 
   try {
-    // Send notification to Tutor that application was approved/accepted!
+    // Send final notification to selected Tutor!
     const jobMedium = (job as any)?.medium || 'টিউশন';
     await NotificationService.createNotification({
       userId: String(application.tutorId),
       type: 'job_approval',
-      title: 'টিউশন আবেদন অনুমোদন করা হয়েছে 🎉',
-      message: `অভিনন্দন! আপনার ${jobMedium} টিউশনের আবেদনটি সফলভাবে অনুমোদন (Approved/Accepted) করা হয়েছে।`,
+      title: '🎉 চূড়ান্তভাবে নির্বাচিত হয়েছেন! (Deal Done)',
+      message: `অভিনন্দন! আপনার ${jobMedium} (${(job as any)?.studentClass || ''}) টিউশনের আবেদনটি চূড়ান্তভাবে অনুমোদন ও নির্বাচিত (Final Confirmed) করা হয়েছে।`,
       referenceId: String(job._id),
       referenceType: 'TuitionJob',
     });
@@ -65,18 +207,21 @@ const acceptApplication = async (id: string, userId: string, userRole: string) =
       await NotificationService.createNotification({
         userId: String(staff._id),
         type: 'job_approval',
-        title: '🎉 টিউশন ম্যাচ সফলভাবে সম্পন্ন',
-        message: `একটি টিউশন জবে (${(job as any)?.studentClass || 'Tuition'}) সফলভাবে টিউটর ম্যাচ ও কনফার্ম হয়েছে।`,
+        title: '🎉 টিউশন ম্যাচ সম্পন্ন (Deal Done)',
+        message: `একটি টিউশন জবে (${(job as any)?.studentClass || 'Tuition'}) সফলভাবে চূড়ান্ত টিউটর কনফার্ম হয়েছে।`,
         referenceId: String(job._id),
         referenceType: 'TuitionJob',
       });
     }
   } catch (err) {
-    console.warn('⚠️ Application accepted notification error:', err);
+    console.warn('⚠️ Final confirm notification error:', err);
   }
 
   return application;
 };
+
+// Backward-compatible alias for existing accept calls
+const acceptApplication = finalConfirmApplication;
 
 const rejectApplication = async (id: string, userId: string, userRole: string) => {
   const application = await Application.findById(id).populate('jobId');
@@ -89,6 +234,14 @@ const rejectApplication = async (id: string, userId: string, userRole: string) =
   const isStaff = ['admin', 'super_admin', 'moderator'].includes(userRole);
   if (!isStaff && String(job.postedBy) !== userId) {
     throw new AppError(403, 'You are not authorized to reject this application!');
+  }
+
+  // 🛡️ Moderator Protection: Moderator cannot manage applications on jobs created by Admin or Super Admin
+  if (userRole === 'moderator') {
+    const posterUser = await User.findById(job.postedBy).select('role');
+    if (posterUser && ['admin', 'super_admin'].includes(posterUser.role)) {
+      throw new AppError(403, 'মডারেটর হিসেবে আপনি এডমিনের তৈরি করা টিউশন পোস্টের আবেদন রিজেক্ট করতে পারবেন না।');
+    }
   }
 
   application.status = 'Rejected';
@@ -124,6 +277,14 @@ const getJobApplications = async (jobId: string, userId: string, userRole: strin
     throw new AppError(403, 'You are not authorized to view applications for this job.');
   }
 
+  let isRestrictedForModerator = false;
+  if (userRole === 'moderator') {
+    const posterUser = await User.findById(job.postedBy).select('role');
+    if (posterUser && ['admin', 'super_admin'].includes(posterUser.role)) {
+      isRestrictedForModerator = true;
+    }
+  }
+
   const applications = await Application.find({ jobId })
     .populate('tutorId', 'name email phone avatar')
     .sort({ matchScore: -1, createdAt: -1 });
@@ -134,7 +295,7 @@ const getJobApplications = async (jobId: string, userId: string, userRole: strin
   const tutorProfiles = await Tutor.find({ userId: { $in: tutorUserIds } }).lean();
   const profileMap = new Map<string, any>(tutorProfiles.map((p: any) => [String(p.userId), p]));
 
-  // Privacy Protection: Mask sensitive contact/personal info until application is accepted
+  // Privacy Protection: Mask sensitive contact/personal info until application is accepted or for restricted moderator
   const sanitizedApplications = applications.map((app) => {
     const rawApp = app.toObject ? app.toObject() : app;
     const tutorUser = (rawApp.tutorId as any) || {};
@@ -149,6 +310,34 @@ const getJobApplications = async (jobId: string, userId: string, userRole: strin
     const experience = tutorProfile.experience || (tutorProfile as any)?.experienceYears || tutorSnapshot.experience || '';
 
     const isConfirmed = rawApp.status === 'Accepted';
+
+    if (isRestrictedForModerator) {
+      return {
+        ...rawApp,
+        isRestrictedForModerator: true,
+        tutorId: {
+          _id: tutorUser._id,
+          name: tutorName,
+          avatar: tutorAvatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(tutorName || 'tutor')}`,
+          phone: '🔒 Protected by Admin',
+          email: '🔒 Protected by Admin',
+        },
+        tutorProfile: {
+          university: university,
+          department: department,
+          qualification: qualification,
+          experience: experience,
+          rating: tutorProfile.rating || 0,
+          reviewCount: tutorProfile.reviewCount || 0,
+          totalTuitionsCompleted: tutorProfile.totalTuitionsCompleted || 0,
+          isVerified: tutorProfile.isVerified !== undefined ? tutorProfile.isVerified : true,
+          gender: tutorProfile.gender || '',
+          subjects: tutorProfile.subjects || [],
+          location: tutorProfile.location || {},
+          bio: tutorProfile.bio || '',
+        },
+      };
+    }
 
     if (!isStaff && !isConfirmed) {
       return {
@@ -598,7 +787,7 @@ const renderContractDeedHtml = async (applicationId: string): Promise<string> =>
         <h4>👤 প্রথম পক্ষ (মিডিয়া কর্তৃপক্ষ)</h4>
         <p><strong>প্রতিষ্ঠানের নাম:</strong> Home Tutor Provider BD</p>
         <p><strong>সার্ভিস ধরন:</strong> প্রফেশনাল হোম ও অনলাইন টিউটর প্রভাইডার</p>
-        <p><strong>যোগাযোগ / হেল্পলাইন:</strong> +880 1832-302302</p>
+        <p><strong>যোগাযোগ / হেল্পলাইন:</strong> +880 1928-325460</p>
         <p><strong>ইমেইল:</strong> legal@hometutorproviderbd.com</p>
         <p><strong>হেড অফিস:</strong> ঢাকা, বাংলাদেশ</p>
       </div>
@@ -712,6 +901,9 @@ const renderContractDeedHtml = async (applicationId: string): Promise<string> =>
 export const ApplicationService = {
   getMyApplications,
   getApplicationById,
+  demoConfirmApplication,
+  demoCompleteApplication,
+  finalConfirmApplication,
   acceptApplication,
   rejectApplication,
   withdrawApplication,

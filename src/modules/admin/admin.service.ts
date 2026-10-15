@@ -7,8 +7,13 @@ import { Tutor } from '../tutor/tutor.model.js';
 import { User } from '../user/user.model.js';
 import { Verification } from '../verification/verification.model.js';
 import { Coaching } from '../coaching/coaching.model.js';
+import { CacheService } from '../../services/cache.service.js';
 
 const getDashboardStats = async () => {
+  const cacheKey = 'admin:dashboard:stats';
+  const cached = await CacheService.getCache<any>(cacheKey);
+  if (cached) return cached;
+
   const [
     totalUsers,
     totalTutors,
@@ -20,7 +25,8 @@ const getDashboardStats = async () => {
     pendingVerifications,
     pendingJobs,
     pendingWithdrawals,
-    acceptedApps,
+    activeTuitions,
+    closedTuitions,
     recentJobsDocs,
     recentApplicationsDocs,
     recentUsersDocs,
@@ -35,81 +41,92 @@ const getDashboardStats = async () => {
     Verification.countDocuments({ status: 'Pending' }),
     TuitionJob.countDocuments({ approvalStatus: 'Pending' }),
     Withdrawal.countDocuments({ status: 'Pending' }),
-    Application.find({ status: { $regex: /^accepted$/i } }),
-    TuitionJob.find().sort({ createdAt: -1 }).limit(5).populate('postedBy', 'name email phone avatar'),
-    Application.find().sort({ createdAt: -1 }).limit(5).populate('tutorId', 'name email phone avatar').populate('jobId', 'studentClass subjects location salary'),
-    User.find({ role: { $nin: ['super_admin', 'admin'] } }).sort({ createdAt: -1 }).limit(5).select('name email role avatar createdAt status'),
+    TuitionJob.countDocuments({
+      status: { $in: ['Matched', 'Running', 'Active', 'Confirmed', 'Hired', 'matched', 'hired', 'active'] },
+    } as any),
+    TuitionJob.countDocuments({
+      status: { $in: ['Closed', 'closed', 'Cancelled', 'cancelled'] },
+    } as any),
+    TuitionJob.find()
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .select('customId studentClass subjects location salary status approvalStatus createdAt')
+      .populate('postedBy', 'name email phone avatar')
+      .lean(),
+    Application.find()
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .select('status appliedAt createdAt expectedSalary matchScore')
+      .populate('tutorId', 'name email phone avatar')
+      .populate('jobId', 'customId studentClass subjects location salary')
+      .lean(),
+    User.find({ role: { $nin: ['super_admin', 'admin'] } })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .select('name email role avatar createdAt status')
+      .lean(),
   ]);
-
-  const acceptedJobIds = acceptedApps.map((a: any) => a.jobId?.toString()).filter(Boolean);
-
-  const activeTuitions = await TuitionJob.countDocuments({
-    $or: [
-      { _id: { $in: acceptedJobIds } },
-      { status: { $in: ['Matched', 'Running', 'Active', 'Confirmed', 'Hired', 'matched', 'hired', 'active'] } },
-    ],
-  } as any);
-
-  const closedTuitions = await TuitionJob.countDocuments({
-    status: { $in: ['Closed', 'closed', 'Cancelled', 'cancelled'] },
-  } as any);
 
   const openTuitions = Math.max(0, totalJobs - activeTuitions - closedTuitions);
 
-  // Real 6-month historical counts computed directly from MongoDB
+  // Parallel 6-month historical trends
   const now = new Date();
-  const monthlyTrends = [];
+  const monthPromises = [];
   for (let i = 5; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const startOfMonth = new Date(d.getFullYear(), d.getMonth(), 1);
-    const endOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
     const monthName = startOfMonth.toLocaleString('en-US', { month: 'short' });
     const year = startOfMonth.getFullYear();
 
-    const [jobs, applications, matched] = await Promise.all([
-      TuitionJob.countDocuments({ createdAt: { $gte: startOfMonth, $lte: endOfMonth } }),
-      Application.countDocuments({ createdAt: { $gte: startOfMonth, $lte: endOfMonth } }),
-      Application.countDocuments({
-        status: { $regex: /^accepted$/i },
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-      }),
-    ]);
-
-    monthlyTrends.push({
-      month: monthName,
-      year,
-      label: `${monthName} ${year}`,
-      jobs,
-      applications,
-      matched,
-    });
+    monthPromises.push(
+      Promise.all([
+        TuitionJob.countDocuments({ createdAt: { $gte: startOfMonth, $lte: endOfMonth } }),
+        Application.countDocuments({ createdAt: { $gte: startOfMonth, $lte: endOfMonth } }),
+        Application.countDocuments({
+          status: { $in: ['accepted', 'Accepted'] },
+          createdAt: { $gte: startOfMonth, $lte: endOfMonth },
+        } as any),
+      ]).then(([jobs, applications, matched]) => ({
+        month: monthName,
+        year,
+        label: `${monthName} ${year}`,
+        jobs,
+        applications,
+        matched,
+      })),
+    );
   }
 
-  // Real 4-week breakdown for the current month
-  const weeklyTrends = [];
+  // Parallel 4-week breakdown for current month
+  const weekPromises = [];
   for (let w = 1; w <= 4; w++) {
     const startOfWeek = new Date(now.getFullYear(), now.getMonth(), (w - 1) * 7 + 1);
     const endOfWeek = new Date(now.getFullYear(), now.getMonth(), Math.min(w * 7, 31), 23, 59, 59, 999);
 
-    const [jobs, applications, matched] = await Promise.all([
-      TuitionJob.countDocuments({ createdAt: { $gte: startOfWeek, $lte: endOfWeek } }),
-      Application.countDocuments({ createdAt: { $gte: startOfWeek, $lte: endOfWeek } }),
-      Application.countDocuments({
-        status: { $regex: /^accepted$/i },
-        createdAt: { $gte: startOfWeek, $lte: endOfWeek },
-      }),
-    ]);
-
-    weeklyTrends.push({
-      week: `Week ${w}`,
-      label: `W${w} (${startOfWeek.getDate()}-${endOfWeek.getDate()} ${now.toLocaleString('en-US', { month: 'short' })})`,
-      jobs,
-      applications,
-      matched,
-    });
+    weekPromises.push(
+      Promise.all([
+        TuitionJob.countDocuments({ createdAt: { $gte: startOfWeek, $lte: endOfWeek } }),
+        Application.countDocuments({ createdAt: { $gte: startOfWeek, $lte: endOfWeek } }),
+        Application.countDocuments({
+          status: { $in: ['accepted', 'Accepted'] },
+          createdAt: { $gte: startOfWeek, $lte: endOfWeek },
+        } as any),
+      ]).then(([jobs, applications, matched]) => ({
+        week: `Week ${w}`,
+        label: `W${w} (${startOfWeek.getDate()}-${endOfWeek.getDate()} ${now.toLocaleString('en-US', { month: 'short' })})`,
+        jobs,
+        applications,
+        matched,
+      })),
+    );
   }
 
-  return {
+  const [monthlyTrends, weeklyTrends] = await Promise.all([
+    Promise.all(monthPromises),
+    Promise.all(weekPromises),
+  ]);
+
+  const stats = {
     totalUsers,
     totalTutors,
     totalStudents,
@@ -129,21 +146,36 @@ const getDashboardStats = async () => {
     recentApplications: recentApplicationsDocs,
     recentUsers: recentUsersDocs,
   };
+
+  await CacheService.setCache(cacheKey, stats, 60); // 1 minute TTL
+  return stats;
 };
 
 const getAllUsers = async (query: Record<string, unknown>) => {
+  const cacheKey = `admin:users:${JSON.stringify(query)}`;
+  const cached = await CacheService.getCache<any[]>(cacheKey);
+  if (cached) return cached;
+
   const filter: Record<string, unknown> = {};
   if (query.role) filter.role = query.role;
   if (query.status) filter.status = query.status;
 
-  const users = await User.find(filter).sort({ createdAt: -1 }).lean();
+  const users = await User.find(filter)
+    .sort({ createdAt: -1 })
+    .select('name username email phone role permissions createdBy avatar isEmailVerified isPhoneVerified isApproved status createdAt lastLoginAt tradeLicense')
+    .lean();
 
-  // Attach tutor phone, verification and complete profile details
   const userIds = users.map((u) => u._id);
   const [tutorProfiles, verifications, coachingProfiles] = await Promise.all([
-    Tutor.find({ userId: { $in: userIds } }).lean(),
-    Verification.find({ tutorId: { $in: userIds } }).lean(),
-    Coaching.find({ userId: { $in: userIds } }).lean(),
+    Tutor.find({ userId: { $in: userIds } })
+      .select('userId university department qualification experience mediums preferredClasses preferredAreas salary rating reviewCount isVerified verificationStatus isPremium gender location bio submittedAt verifiedAt rejectionReason nid nidCard studentIdCard certificates')
+      .lean(),
+    Verification.find({ tutorId: { $in: userIds } })
+      .select('tutorId status rejectionReason createdAt nidDocument studentIdDocument')
+      .lean(),
+    Coaching.find({ userId: { $in: userIds } })
+      .select('userId name instituteName district location isVerified about createdAt tradeLicense batches phone')
+      .lean(),
   ]);
 
   const tutorMap = new Map(tutorProfiles.map((t) => [String(t.userId), t]));
@@ -209,7 +241,6 @@ const getAllUsers = async (query: Record<string, unknown>) => {
       totalTuitionsCompleted: tutorDoc?.totalTuitionsCompleted ?? 0,
       isPremium: Boolean(tutorDoc?.isPremium),
       certificates: tutorDoc?.certificates || [],
-      cv: tutorDoc?.cv || '',
       nid: tutorDoc?.nid || '',
       rejectionReason: tutorDoc?.rejectionReason || verifDoc?.rejectionReason || '',
       submittedAt: tutorDoc?.submittedAt || verifDoc?.createdAt || coachingDoc?.createdAt || null,
@@ -217,6 +248,7 @@ const getAllUsers = async (query: Record<string, unknown>) => {
     };
   });
 
+  await CacheService.setCache(cacheKey, enrichedUsers, 60); // 1 minute TTL
   return enrichedUsers;
 };
 
@@ -225,11 +257,31 @@ const updateUserStatus = async (id: string, status: 'active' | 'blocked' | 'pend
   if (!user) {
     throw new AppError(404, 'User not found!');
   }
+
+  // Invalidate user and admin dashboard caches
+  try {
+    await Promise.all([
+      CacheService.invalidatePattern('admin:users*'),
+      CacheService.deleteCache('admin:dashboard:stats'),
+    ]);
+  } catch (err) {
+    console.warn('⚠️ Cache invalidation error on updateUserStatus:', err);
+  }
+
   return user;
 };
 
 const getPendingTutors = async () => {
-  const tutors = await Tutor.find({ isVerified: false }).populate('userId', 'name email phone avatar status');
+  const cacheKey = 'admin:tutors:pending';
+  const cached = await CacheService.getCache<any[]>(cacheKey);
+  if (cached) return cached;
+
+  const tutors = await Tutor.find({ isVerified: false })
+    .populate('userId', 'name email phone avatar status')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  await CacheService.setCache(cacheKey, tutors, 60);
   return tutors;
 };
 
@@ -277,14 +329,16 @@ const approveTutor = async (id: string, isApproved: boolean, rejectionReason?: s
     }
   }
 
-  // Invalidate tutor search and detail caches
+  // Invalidate tutor and admin caches
   try {
-    const { CacheService } = await import('../../services/cache.service.js');
-    await CacheService.invalidatePattern('tutors:search:*');
-    if (tutor?._id) {
-      await CacheService.deleteCache(`tutor:detail:${tutor._id}`);
-    }
-    await CacheService.deleteCache('homepage:data');
+    await Promise.all([
+      CacheService.invalidatePattern('tutors:search:*'),
+      CacheService.invalidatePattern('admin:users*'),
+      CacheService.deleteCache('admin:tutors:pending'),
+      CacheService.deleteCache('admin:dashboard:stats'),
+      CacheService.deleteCache('homepage:data'),
+      tutor?._id ? CacheService.deleteCache(`tutor:detail:${tutor._id}`) : Promise.resolve(),
+    ]);
   } catch (err) {
     console.warn('⚠️ Cache invalidation error:', err);
   }
@@ -324,22 +378,60 @@ const approveTutor = async (id: string, isApproved: boolean, rejectionReason?: s
 };
 
 const getPendingJobs = async () => {
-  const jobs = await TuitionJob.find({ approvalStatus: 'Pending' }).populate('postedBy', 'name email phone avatar');
+  const cacheKey = 'admin:jobs:pending';
+  const cached = await CacheService.getCache<any[]>(cacheKey);
+  if (cached) return cached;
+
+  const jobs = await TuitionJob.find({ approvalStatus: 'Pending' })
+    .populate('postedBy', 'name email phone avatar')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  await CacheService.setCache(cacheKey, jobs, 60);
   return jobs;
 };
 
-const approveJob = async (jobId: string, approvalStatus: 'Approved' | 'Rejected') => {
-  const job = await TuitionJob.findByIdAndUpdate(jobId, { approvalStatus }, { returnDocument: 'after' });
-  if (!job) {
+const approveJob = async (jobId: string, approvalStatus: 'Approved' | 'Rejected', userRole?: string) => {
+  const existingJob = await TuitionJob.findById(jobId);
+  if (!existingJob) {
     throw new AppError(404, 'Tuition job not found!');
   }
+
+  // 🛡️ Moderator Protection: Moderator cannot change approval status of jobs created by Admin / Super Admin
+  if (userRole === 'moderator') {
+    const posterUser = await User.findById(existingJob.postedBy).select('role');
+    if (posterUser && ['admin', 'super_admin'].includes(posterUser.role)) {
+      throw new AppError(403, 'মডারেটর হিসেবে আপনি এডমিনের তৈরি করা টিউশন পোস্ট অনুমোদন বা পরিবর্তন করতে পারবেন না।');
+    }
+  }
+
+  const job = await TuitionJob.findByIdAndUpdate(jobId, { approvalStatus }, { returnDocument: 'after' });
+
+  // Invalidate public and admin jobs cache
+  try {
+    await Promise.all([
+      CacheService.invalidatePattern('jobs:*'),
+      CacheService.deleteCache('admin:jobs:pending'),
+      CacheService.deleteCache('admin:dashboard:stats'),
+    ]);
+  } catch (err) {
+    console.warn('⚠️ Cache invalidation error on job approval:', err);
+  }
+
   return job;
 };
 
 const getVerifications = async () => {
+  const cacheKey = 'admin:verifications:all';
+  const cached = await CacheService.getCache<any[]>(cacheKey);
+  if (cached) return cached;
+
   const verifications = await Verification.find()
     .populate('tutorId', 'name email phone avatar')
-    .sort({ createdAt: -1 });
+    .sort({ createdAt: -1 })
+    .lean();
+
+  await CacheService.setCache(cacheKey, verifications, 60);
   return verifications;
 };
 
@@ -367,16 +459,34 @@ const updateVerificationStatus = async (
     await Tutor.findOneAndUpdate({ userId: verification.tutorId }, { isVerified: true });
   }
 
+  // Invalidate caches
+  try {
+    await Promise.all([
+      CacheService.deleteCache('admin:verifications:all'),
+      CacheService.invalidatePattern('admin:users*'),
+      CacheService.deleteCache('admin:dashboard:stats'),
+      CacheService.invalidatePattern('tutors:search:*'),
+    ]);
+  } catch (err) {
+    console.warn('⚠️ Cache invalidation error on verification update:', err);
+  }
+
   return verification;
 };
 
 const getPayments = async () => {
-  const payments = await Payment.find().populate('userId', 'name email phone').sort({ createdAt: -1 });
-  const withdrawals = await Withdrawal.find().populate('userId', 'name email phone').sort({ createdAt: -1 });
-  return {
-    payments,
-    withdrawals,
-  };
+  const cacheKey = 'admin:payments:all';
+  const cached = await CacheService.getCache<any>(cacheKey);
+  if (cached) return cached;
+
+  const [payments, withdrawals] = await Promise.all([
+    Payment.find().populate('userId', 'name email phone').sort({ createdAt: -1 }).lean(),
+    Withdrawal.find().populate('userId', 'name email phone').sort({ createdAt: -1 }).lean(),
+  ]);
+
+  const result = { payments, withdrawals };
+  await CacheService.setCache(cacheKey, result, 60);
+  return result;
 };
 
 const updatePaymentStatus = async (
@@ -390,6 +500,14 @@ const updatePaymentStatus = async (
     withdrawal.reviewedBy = adminId as any;
     withdrawal.reviewedAt = new Date();
     await withdrawal.save();
+    try {
+      await Promise.all([
+        CacheService.deleteCache('admin:payments:all'),
+        CacheService.deleteCache('admin:dashboard:stats'),
+      ]);
+    } catch (err) {
+      console.warn('⚠️ Cache invalidation error:', err);
+    }
     return withdrawal;
   }
 
@@ -397,6 +515,16 @@ const updatePaymentStatus = async (
   if (!payment) {
     throw new AppError(404, 'Payment or withdrawal record not found!');
   }
+
+  try {
+    await Promise.all([
+      CacheService.deleteCache('admin:payments:all'),
+      CacheService.deleteCache('admin:dashboard:stats'),
+    ]);
+  } catch (err) {
+    console.warn('⚠️ Cache invalidation error:', err);
+  }
+
   return payment;
 };
 
@@ -410,6 +538,18 @@ const deleteUser = async (id: string) => {
     Coaching.deleteMany({ userId: id }),
     Verification.deleteMany({ tutorId: id }),
   ]);
+
+  try {
+    await Promise.all([
+      CacheService.invalidatePattern('admin:users*'),
+      CacheService.invalidatePattern('tutors:search:*'),
+      CacheService.deleteCache('admin:dashboard:stats'),
+      CacheService.deleteCache('homepage:data'),
+    ]);
+  } catch (err) {
+    console.warn('⚠️ Cache invalidation error on deleteUser:', err);
+  }
+
   return user;
 };
 
@@ -470,6 +610,12 @@ const createStaff = async (
     createdBy: creatorId as any,
   });
 
+  try {
+    await CacheService.deleteCache('admin:staff:all');
+  } catch (err) {
+    console.warn('⚠️ Cache invalidation error on createStaff:', err);
+  }
+
   return {
     _id: staff._id,
     name: staff.name,
@@ -484,12 +630,18 @@ const createStaff = async (
 };
 
 const getAllStaff = async () => {
+  const cacheKey = 'admin:staff:all';
+  const cached = await CacheService.getCache<any[]>(cacheKey);
+  if (cached) return cached;
+
   const staff = await User.find({
     role: { $in: ['super_admin', 'admin', 'moderator'] },
   })
     .populate('createdBy', 'name email avatar role')
-    .sort({ createdAt: -1 });
+    .sort({ createdAt: -1 })
+    .lean();
 
+  await CacheService.setCache(cacheKey, staff, 60);
   return staff;
 };
 
@@ -505,6 +657,13 @@ const updateStaffStatus = async (id: string, status: 'active' | 'blocked') => {
 
   target.status = status;
   await target.save();
+
+  try {
+    await CacheService.deleteCache('admin:staff:all');
+  } catch (err) {
+    console.warn('⚠️ Cache invalidation error on updateStaffStatus:', err);
+  }
+
   return target;
 };
 
@@ -517,6 +676,13 @@ const updateStaffPermissions = async (id: string, permissions: string[]) => {
   if (!staff) {
     throw new AppError(404, 'Staff account not found!');
   }
+
+  try {
+    await CacheService.deleteCache('admin:staff:all');
+  } catch (err) {
+    console.warn('⚠️ Cache invalidation error on updateStaffPermissions:', err);
+  }
+
   return staff;
 };
 
@@ -530,13 +696,25 @@ const deleteStaff = async (id: string) => {
   }
 
   await User.findByIdAndDelete(id);
+
+  try {
+    await CacheService.deleteCache('admin:staff:all');
+  } catch (err) {
+    console.warn('⚠️ Cache invalidation error on deleteStaff:', err);
+  }
+
   return { message: 'Staff account removed successfully' };
 };
 
 const getAllApplications = async () => {
+  const cacheKey = 'admin:applications:all';
+  const cached = await CacheService.getCache<any[]>(cacheKey);
+  if (cached) return cached;
+
   const applications = await Application.find()
     .populate({
       path: 'jobId',
+      select: 'customId studentClass subjects location salary salaryRange salaryMax status postedBy tuitionType medium duration tutoringDays requirements createdAt phone whatsappNumber contactName description universityPreference studentGender tutorQualification',
       populate: {
         path: 'postedBy',
         model: 'User',
@@ -547,33 +725,7 @@ const getAllApplications = async () => {
     .sort({ createdAt: -1 })
     .lean();
 
-  // Guarantee that every job has its student/guardian user details attached
-  const userIdsToFetch = new Set<string>();
-  applications.forEach((app: any) => {
-    if (app.jobId && typeof app.jobId === 'object') {
-      const pb = app.jobId.postedBy;
-      if (pb && (typeof pb === 'string' || typeof pb === 'number' || (pb._id && !pb.name))) {
-        userIdsToFetch.add(String(pb._id || pb));
-      }
-    }
-  });
-
-  if (userIdsToFetch.size > 0) {
-    const users = await User.find({ _id: { $in: Array.from(userIdsToFetch) } })
-      .select('name email phone avatar role location address')
-      .lean();
-    const userMap = new Map(users.map((u: any) => [String(u._id), u]));
-    applications.forEach((app: any) => {
-      if (app.jobId && typeof app.jobId === 'object') {
-        const pb = app.jobId.postedBy;
-        const uid = String(pb?._id || pb);
-        if (userMap.has(uid)) {
-          app.jobId.postedBy = userMap.get(uid);
-        }
-      }
-    });
-  }
-
+  await CacheService.setCache(cacheKey, applications, 60);
   return applications;
 };
 
@@ -598,3 +750,4 @@ export const AdminService = {
   updateStaffPermissions,
   deleteStaff,
 };
+

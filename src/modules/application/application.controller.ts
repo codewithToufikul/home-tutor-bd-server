@@ -13,9 +13,24 @@ const getApplicationById = async (req: CustomRequest, res: Response) => {
   sendResponse(res, { statusCode: 200, success: true, message: 'Application retrieved successfully.', data: result });
 };
 
+const demoConfirmApplication = async (req: CustomRequest, res: Response) => {
+  const result = await ApplicationService.demoConfirmApplication(String(req.params['id']), req.user!.userId, req.user!.role);
+  sendResponse(res, { statusCode: 200, success: true, message: 'Tutor application confirmed for demo class successfully.', data: result });
+};
+
+const demoCompleteApplication = async (req: CustomRequest, res: Response) => {
+  const result = await ApplicationService.demoCompleteApplication(String(req.params['id']), req.user!.userId, req.user!.role);
+  sendResponse(res, { statusCode: 200, success: true, message: 'Demo class marked as completed successfully.', data: result });
+};
+
+const finalConfirmApplication = async (req: CustomRequest, res: Response) => {
+  const result = await ApplicationService.finalConfirmApplication(String(req.params['id']), req.user!.userId, req.user!.role);
+  sendResponse(res, { statusCode: 200, success: true, message: 'Tutor finalized and tuition matched successfully! Deal Done.', data: result });
+};
+
 const acceptApplication = async (req: CustomRequest, res: Response) => {
   const result = await ApplicationService.acceptApplication(String(req.params['id']), req.user!.userId, req.user!.role);
-  sendResponse(res, { statusCode: 200, success: true, message: 'Application accepted successfully.', data: result });
+  sendResponse(res, { statusCode: 200, success: true, message: 'Application accepted and tuition matched successfully.', data: result });
 };
 
 const rejectApplication = async (req: CustomRequest, res: Response) => {
@@ -51,6 +66,9 @@ const getContractDeedHtml = async (req: CustomRequest, res: Response) => {
 export const ApplicationController = {
   getMyApplications,
   getApplicationById,
+  demoConfirmApplication,
+  demoCompleteApplication,
+  finalConfirmApplication,
   acceptApplication,
   rejectApplication,
   withdrawApplication,

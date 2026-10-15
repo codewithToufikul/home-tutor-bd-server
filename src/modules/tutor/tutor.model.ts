@@ -44,6 +44,7 @@ const tutorSchema = new Schema<ITutor, TutorModel>(
     isPremium: { type: Boolean, default: false },
     nid: { type: String, default: '' },
     nidCard: { type: String, default: '' },
+    nidBackCard: { type: String, default: '' },
     studentIdCard: { type: String, default: '' },
     verificationStatus: {
       type: String,

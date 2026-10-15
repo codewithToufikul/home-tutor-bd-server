@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { AppError } from '../../errors/AppError.js';
 import { addMatchingJob } from '../../jobs/matching.queue.js';
 import { RuleBasedMatcher } from '../../services/matching.service.js';
+import { CACHE_TTL, CacheService } from '../../services/cache.service.js';
 import {
   buildCursorMatchStage,
   buildNextCursor,
@@ -136,7 +137,7 @@ export const generateTuitionCustomId = async (district: string): Promise<string>
 
   let customId = `${prefix}-${String(nextNum).padStart(3, '0')}`;
   let attempt = 0;
-  while (await TuitionJob.exists({ customId }) && attempt < 100) {
+  while (await TuitionJob.exists({ customId: new RegExp(`^${customId}$`, 'i') }) && attempt < 500) {
     nextNum++;
     customId = `${prefix}-${String(nextNum).padStart(3, '0')}`;
     attempt++;
@@ -155,10 +156,12 @@ const buildFilterMatch = (query: ITuitionSearchQuery): Record<string, unknown> =
         : { approvalStatus: 'Approved' }),
     ...(query.status && query.status !== 'all'
       ? { status: query.status }
-      : {}),
+      : query.status === 'all'
+        ? {}
+        : { status: { $in: ['Open', 'open'] } }),
   };
 
-  // Search by Custom ID (e.g. DHA-001), MongoDB _id or general keyword
+  // Search by Custom ID (e.g. DHA-001, DHA031, 031, dha 31), MongoDB _id or general keyword
   const searchVal = (query.search || query.jobId || '').trim();
   if (searchVal) {
     if (mongoose.isValidObjectId(searchVal)) {
@@ -167,39 +170,75 @@ const buildFilterMatch = (query: ITuitionSearchQuery): Record<string, unknown> =
         { customId: { $regex: searchVal, $options: 'i' } },
       ];
     } else {
+      const escaped = searchVal.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+      const customIdPatterns: string[] = [escaped];
+
+      // Check if user entered letters + digits (e.g. dha031, dha 031, dha-31, dha31)
+      const prefixNumberMatch = searchVal.match(/^([a-zA-Z]+)[\s\-_]*0*(\d+)$/);
+      if (prefixNumberMatch) {
+        const prefix = prefixNumberMatch[1];
+        const num = prefixNumberMatch[2];
+        customIdPatterns.push(`^${prefix}[\\s\\-_]*0*${num}$`);
+        customIdPatterns.push(`${prefix}[\\s\\-_]*0*${num}`);
+      } else {
+        const alphaParts = searchVal.match(/[a-zA-Z]+|\d+/g);
+        if (alphaParts && alphaParts.length > 1) {
+          customIdPatterns.push(alphaParts.join('[\\s\\-_]*0*'));
+        }
+      }
+
+      // Check if user entered pure digits (e.g. 031, 31, 1)
+      const pureDigitsMatch = searchVal.match(/^0*(\d+)$/);
+      if (pureDigitsMatch) {
+        const num = pureDigitsMatch[1];
+        customIdPatterns.push(`[\\s\\-_]0*${num}$`);
+        customIdPatterns.push(`0*${num}$`);
+      }
+
+      // Flexible separators for multi-word or hyphenated inputs (e.g. dha - 031)
+      const flexibleParts = searchVal.split(/[\s\-_]+/).filter(Boolean).map(p => p.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&'));
+      if (flexibleParts.length > 1) {
+        customIdPatterns.push(flexibleParts.join('[\\s\\-_]*'));
+      }
+
+      const combinedCustomIdRegex = Array.from(new Set(customIdPatterns)).join('|');
+
       match['$or'] = [
-        { customId: { $regex: searchVal, $options: 'i' } },
-        { 'location.district': { $regex: searchVal, $options: 'i' } },
-        { 'location.area': { $regex: searchVal, $options: 'i' } },
-        { subjects: { $elemMatch: { $regex: searchVal, $options: 'i' } } },
-        { studentClass: { $regex: searchVal, $options: 'i' } },
-        { medium: { $regex: searchVal, $options: 'i' } },
+        { customId: { $regex: combinedCustomIdRegex, $options: 'i' } },
+        { 'location.district': { $regex: escaped, $options: 'i' } },
+        { 'location.area': { $regex: escaped, $options: 'i' } },
+        { 'location.upazila': { $regex: escaped, $options: 'i' } },
+        { 'location.detailedAddress': { $regex: escaped, $options: 'i' } },
+        { subjects: { $elemMatch: { $regex: escaped, $options: 'i' } } },
+        { studentClass: { $regex: escaped, $options: 'i' } },
+        { medium: { $regex: escaped, $options: 'i' } },
+        { tuitionType: { $regex: escaped, $options: 'i' } },
       ];
     }
   }
 
   if (query.district && query.district !== 'All') {
-    match['location.district'] = { $regex: query.district, $options: 'i' };
+    match['location.district'] = query.district.trim();
   }
   if (query.area && query.area !== 'All') {
-    match['location.area'] = { $regex: query.area, $options: 'i' };
+    match['location.area'] = { $regex: query.area.trim(), $options: 'i' };
   }
   const sub = query.subject || query.category;
   if (sub && sub !== 'All') {
-    match['subjects'] = { $elemMatch: { $regex: sub, $options: 'i' } };
+    match['subjects'] = sub.trim();
   }
   if (query.medium && query.medium !== 'All') {
-    match['medium'] = { $regex: query.medium, $options: 'i' };
+    match['medium'] = query.medium.trim();
   }
   if (query.studentClass && query.studentClass !== 'All') {
-    match['studentClass'] = { $regex: query.studentClass, $options: 'i' };
+    match['studentClass'] = query.studentClass.trim();
   }
   if (query.tuitionType && query.tuitionType !== 'All') {
-    match['tuitionType'] = { $regex: query.tuitionType, $options: 'i' };
+    match['tuitionType'] = query.tuitionType.trim();
   }
   const gender = query.genderPreference || query.gender;
   if (gender && gender !== 'All' && gender !== 'Any') {
-    match['genderPreference'] = { $in: [new RegExp(gender, 'i'), 'Any'] };
+    match['genderPreference'] = { $in: [gender.trim(), 'Any'] };
   }
 
   if (query.minSalary || query.maxSalary) {
@@ -213,7 +252,11 @@ const buildFilterMatch = (query: ITuitionSearchQuery): Record<string, unknown> =
 };
 
 const getAllJobs = async (query: ITuitionSearchQuery) => {
-  const limitNum = Math.min(50, Math.max(1, parseInt(query.limit ?? '20', 10)));
+  const cacheKey = `jobs:${JSON.stringify(query)}`;
+  const cached = await CacheService.getCache<{ data: any[]; meta: any }>(cacheKey);
+  if (cached) return cached;
+
+  const limitNum = Math.min(1000, Math.max(1, parseInt(query.limit ?? '20', 10)));
   const sortMode = resolveSortMode(query.sortBy || 'createdAt', query.sortOrder || 'desc');
   const sortStage = buildSortStage(sortMode);
   const filterMatch = buildFilterMatch(query);
@@ -228,26 +271,7 @@ const getAllJobs = async (query: ITuitionSearchQuery) => {
     },
   };
 
-  const applicationsLookup = {
-    $lookup: {
-      from: 'applications',
-      localField: '_id',
-      foreignField: 'jobId',
-      as: 'applications',
-      pipeline: [
-        {
-          $lookup: {
-            from: 'users',
-            localField: 'tutorId',
-            foreignField: '_id',
-            as: 'tutor',
-            pipeline: [{ $project: { name: 1, phone: 1, avatar: 1, email: 1 } }],
-          },
-        },
-        { $unwind: { path: '$tutor', preserveNullAndEmptyArrays: true } },
-      ],
-    },
-  };
+  let resultData: { data: any[]; meta: any };
 
   if (isPaginationCursor(query)) {
     const decoded = decodeCursor(query.cursor!);
@@ -257,12 +281,11 @@ const getAllJobs = async (query: ITuitionSearchQuery) => {
 
     const pipeline = [
       { $match: filterMatch },
-      userLookup,
-      { $unwind: { path: '$postedByUser', preserveNullAndEmptyArrays: true } },
-      applicationsLookup,
       { $match: cursorMatch },
       { $sort: sortStage },
       { $limit: limitNum + 1 },
+      userLookup,
+      { $unwind: { path: '$postedByUser', preserveNullAndEmptyArrays: true } },
     ];
 
     const docs = await TuitionJob.aggregate(pipeline);
@@ -280,41 +303,48 @@ const getAllJobs = async (query: ITuitionSearchQuery) => {
       hasPrevCursor: true,
     };
 
-    return { data, meta };
+    resultData = { data, meta };
+  } else {
+    const pageNum = Math.max(1, parseInt(query.page ?? '1', 10));
+    const skip = (pageNum - 1) * limitNum;
+
+    const pipeline = [
+      { $match: filterMatch },
+      { $sort: sortStage },
+      {
+        $facet: {
+          data: [
+            { $skip: skip },
+            { $limit: limitNum },
+            userLookup,
+            { $unwind: { path: '$postedByUser', preserveNullAndEmptyArrays: true } },
+          ],
+          totalCount: [{ $count: 'count' }],
+        },
+      },
+    ];
+
+    const [result] = await TuitionJob.aggregate(pipeline);
+    const total: number = result?.totalCount?.[0]?.count ?? 0;
+    const totalPages = Math.ceil(total / limitNum);
+
+    const meta: OffsetMeta = {
+      type: 'offset',
+      page: pageNum,
+      limit: limitNum,
+      total,
+      totalPages,
+      hasNextPage: pageNum < totalPages,
+      hasPrevPage: pageNum > 1,
+    };
+
+    resultData = { data: result?.data ?? [], meta };
   }
 
-  const pageNum = Math.max(1, parseInt(query.page ?? '1', 10));
-  const skip = (pageNum - 1) * limitNum;
+  // Cache public job search results (TTL: 5 minutes)
+  await CacheService.setCache(cacheKey, resultData, CACHE_TTL.SEARCH_JOBS);
 
-  const pipeline = [
-    { $match: filterMatch },
-    userLookup,
-    { $unwind: { path: '$postedByUser', preserveNullAndEmptyArrays: true } },
-    applicationsLookup,
-    { $sort: sortStage },
-    {
-      $facet: {
-        data: [{ $skip: skip }, { $limit: limitNum }],
-        totalCount: [{ $count: 'count' }],
-      },
-    },
-  ];
-
-  const [result] = await TuitionJob.aggregate(pipeline);
-  const total: number = result?.totalCount?.[0]?.count ?? 0;
-  const totalPages = Math.ceil(total / limitNum);
-
-  const meta: OffsetMeta = {
-    type: 'offset',
-    page: pageNum,
-    limit: limitNum,
-    total,
-    totalPages,
-    hasNextPage: pageNum < totalPages,
-    hasPrevPage: pageNum > 1,
-  };
-
-  return { data: result?.data ?? [], meta };
+  return resultData;
 };
 
 const getJobById = async (id: string) => {
@@ -345,14 +375,20 @@ const createJob = async (
 
   if (!finalPostedBy) {
     if (payload.phone) {
-      let existingUser = await User.findOne({ phone: payload.phone });
+      const rawPhone = payload.phone.trim();
+      const cleanPhone = rawPhone.replace(/[^0-9]/g, '');
+      const phoneSuffix = cleanPhone.slice(-10);
+      let existingUser = await User.findOne({
+        $or: [
+          { phone: rawPhone },
+          ...(phoneSuffix ? [{ phone: new RegExp(`${phoneSuffix}$`) }] : []),
+        ],
+      });
       if (!existingUser) {
-        const cleanPhone = payload.phone.replace(/[^0-9]/g, '');
         const randomPass = `Guest@${cleanPhone || '1234'}`;
         existingUser = await User.create({
           name: payload.contactName || payload.name || `Guardian (${cleanPhone.slice(-4) || 'Guest'})`,
-          phone: payload.phone,
-          // No auto-generated email: will be undefined and display as N/A
+          phone: rawPhone,
           password: randomPass,
           role: 'guardian',
           isEmailVerified: false,
@@ -401,10 +437,42 @@ const createJob = async (
     };
   }
 
-  // Normalize salary
-  const salary = typeof payload.salary === 'number' && !isNaN(payload.salary)
-    ? payload.salary
-    : parseInt(String(payload.salary || 5000), 10) || 5000;
+  // Normalize salary & salary range
+  const rawSalaryInput = (payload as any).salaryOffer ?? payload.salary ?? payload.salaryRange;
+  const isNegotiableInput = (payload as any).negotiable || (payload as any).salaryNegotiable || rawSalaryInput === 'Negotiable' || rawSalaryInput === '0' || rawSalaryInput === 0;
+  
+  let salary = 5000;
+  let salaryMax: number | undefined = undefined;
+  let salaryRange: string | undefined = undefined;
+  let negotiable = Boolean(isNegotiableInput);
+
+  if (negotiable) {
+    salary = 0;
+    salaryRange = 'Negotiable';
+  } else if (typeof rawSalaryInput === 'string' && rawSalaryInput.includes('-')) {
+    const parts = rawSalaryInput.split('-').map((p: string) => parseInt(p.replace(/[^0-9]/g, ''), 10)).filter((n: number) => !isNaN(n));
+    if (parts.length >= 2) {
+      const minVal = parts[0] ?? 5000;
+      const maxVal = parts[1] ?? minVal;
+      salary = Math.min(minVal, maxVal);
+      salaryMax = Math.max(minVal, maxVal);
+      salaryRange = `${salary}-${salaryMax}`;
+    } else if (parts.length === 1) {
+      salary = parts[0] ?? 5000;
+      salaryRange = String(salary);
+    }
+  } else if (typeof rawSalaryInput === 'number' && !isNaN(rawSalaryInput)) {
+    salary = rawSalaryInput;
+    salaryRange = String(rawSalaryInput);
+  } else if (rawSalaryInput) {
+    salary = parseInt(String(rawSalaryInput).replace(/[^0-9]/g, ''), 10) || 5000;
+    salaryRange = String(salary);
+  }
+
+  if ((payload as any).salaryMax && typeof (payload as any).salaryMax === 'number') {
+    salaryMax = (payload as any).salaryMax;
+    salaryRange = `${salary}-${salaryMax}`;
+  }
 
   // Normalize subjects
   const subjects = Array.isArray(payload.subjects) && payload.subjects.length > 0
@@ -414,12 +482,15 @@ const createJob = async (
   // Generate customized Tuition ID (e.g. DHA-001, CTG-001, RAJ-001)
   const customId = payload.customId || (await generateTuitionCustomId(location.district));
 
-  const job = await TuitionJob.create({
+  const createPayload: Record<string, any> = {
     ...payload,
     customId,
     postedBy: finalPostedBy,
     location,
     salary,
+    salaryMax,
+    salaryRange,
+    negotiable,
     subjects,
     studentClass: payload.studentClass || 'Class 10',
     medium: payload.medium || 'Bangla Medium',
@@ -433,7 +504,9 @@ const createJob = async (
     description: payload.description || '',
     status: 'Open',
     approvalStatus: 'Approved',
-  });
+  };
+
+  const job = (await TuitionJob.create(createPayload)) as any;
 
   // Trigger background Auto Matching worker!
   try {
@@ -447,21 +520,28 @@ const createJob = async (
 
   // Send notification to all staff (Super Admin, Admin, Moderator) about new tuition job
   try {
-    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } });
-    const poster = await User.findById(finalPostedBy);
-    for (const staff of staffUsers) {
-      await NotificationService.createNotification({
-        userId: String(staff._id),
-        type: 'tuition_job',
-        title: `New Tuition Job [${job.customId}]`,
-        message: `${poster?.name || 'A user'} posted tuition job #${job.customId} for ${job.studentClass} (${location.area}, ${location.district} - ৳${salary})`,
-        referenceId: String(job._id),
-        referenceType: 'TuitionJob',
-      });
-    }
+    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } }).select('_id');
+    const poster = await User.findById(finalPostedBy).select('name');
+    const posterName = poster?.name || 'A user';
+
+    await Promise.all(
+      staffUsers.map((staff) =>
+        NotificationService.createNotification({
+          userId: String(staff._id),
+          type: 'tuition_job',
+          title: `New Tuition Job [${job.customId}]`,
+          message: `${posterName} posted tuition job #${job.customId} for ${job.studentClass} (${location.area}, ${location.district} - ৳${salary})`,
+          referenceId: String(job._id),
+          referenceType: 'TuitionJob',
+        }).catch((err) => console.warn(`⚠️ Staff notification failed for ${staff._id}:`, err)),
+      ),
+    );
   } catch (notifErr) {
     console.warn('⚠️ Staff notification error on job creation (non-fatal):', notifErr);
   }
+
+  // Invalidate jobs cache
+  await CacheService.invalidatePattern('jobs:*');
 
   return job;
 };
@@ -474,7 +554,50 @@ const updateJob = async (id: string, userId: string, userRole: string, payload: 
     throw new AppError(403, 'You are not authorized to update this job!');
   }
 
+  // 🛡️ Moderator Protection: Moderator cannot edit jobs created by Admin or Super Admin
+  if (userRole === 'moderator') {
+    const posterUser = await User.findById(job.postedBy).select('role');
+    if (posterUser && ['admin', 'super_admin'].includes(posterUser.role)) {
+      throw new AppError(403, 'মডারেটর হিসেবে আপনি এডমিনের তৈরি করা টিউশন পোস্ট পরিবর্তন বা এডিট করতে পারবেন না।');
+    }
+  }
+
   const cleanPayload: any = { ...payload };
+
+  // Parse salary / salary range if provided
+  if (cleanPayload.salary !== undefined || cleanPayload.salaryOffer !== undefined || cleanPayload.salaryRange !== undefined || cleanPayload.negotiable !== undefined) {
+    const rawSal = cleanPayload.salaryOffer ?? cleanPayload.salaryRange ?? cleanPayload.salary;
+    const isNeg = cleanPayload.negotiable || cleanPayload.salaryNegotiable || rawSal === 'Negotiable' || rawSal === '0' || rawSal === 0;
+    if (isNeg) {
+      cleanPayload.salary = 0;
+      cleanPayload.salaryMax = undefined;
+      cleanPayload.salaryRange = 'Negotiable';
+      cleanPayload.negotiable = true;
+    } else if (typeof rawSal === 'string' && rawSal.includes('-')) {
+      const parts = rawSal.split('-').map((p: string) => parseInt(p.replace(/[^0-9]/g, ''), 10)).filter((n: number) => !isNaN(n));
+      if (parts.length >= 2) {
+        const minVal = parts[0] ?? 5000;
+        const maxVal = parts[1] ?? minVal;
+        cleanPayload.salary = Math.min(minVal, maxVal);
+        cleanPayload.salaryMax = Math.max(minVal, maxVal);
+        cleanPayload.salaryRange = `${cleanPayload.salary}-${cleanPayload.salaryMax}`;
+        cleanPayload.negotiable = false;
+      } else if (parts.length === 1) {
+        cleanPayload.salary = parts[0] ?? 5000;
+        cleanPayload.salaryMax = undefined;
+        cleanPayload.salaryRange = String(cleanPayload.salary);
+        cleanPayload.negotiable = false;
+      }
+    } else if (typeof rawSal === 'number' && !isNaN(rawSal)) {
+      cleanPayload.salary = rawSal;
+      cleanPayload.salaryRange = String(rawSal);
+      cleanPayload.negotiable = false;
+    } else if (rawSal) {
+      cleanPayload.salary = parseInt(String(rawSal).replace(/[^0-9]/g, ''), 10) || 5000;
+      cleanPayload.salaryRange = String(cleanPayload.salary);
+      cleanPayload.negotiable = false;
+    }
+  }
 
   // Sanitize universityPreference
   if (Array.isArray(cleanPayload.universityPreference)) {
@@ -519,6 +642,7 @@ const updateJob = async (id: string, userId: string, userRole: string, payload: 
     cleanPayload.subjects ||
     cleanPayload.location ||
     cleanPayload.salary ||
+    cleanPayload.salaryMax ||
     cleanPayload.medium ||
     cleanPayload.studentClass ||
     cleanPayload.genderPreference
@@ -528,6 +652,9 @@ const updateJob = async (id: string, userId: string, userRole: string, payload: 
       triggeredBy: 'manual_rematch',
     });
   }
+
+  // Invalidate jobs cache
+  await CacheService.invalidatePattern('jobs:*');
 
   return updatedJob;
 };
@@ -539,7 +666,20 @@ const deleteJob = async (id: string, userId: string, userRole: string) => {
   if (!isStaff && String(job.postedBy) !== userId) {
     throw new AppError(403, 'You are not authorized to delete this job!');
   }
+
+  // 🛡️ Moderator Protection: Moderator cannot delete jobs created by Admin or Super Admin
+  if (userRole === 'moderator') {
+    const posterUser = await User.findById(job.postedBy).select('role');
+    if (posterUser && ['admin', 'super_admin'].includes(posterUser.role)) {
+      throw new AppError(403, 'মডারেটর হিসেবে আপনি এডমিনের তৈরি করা টিউশন পোস্ট মুছে ফেলতে পারবেন না।');
+    }
+  }
+
   await TuitionJob.findByIdAndDelete(id);
+
+  // Invalidate jobs cache
+  await CacheService.invalidatePattern('jobs:*');
+
   return { message: 'Tuition job deleted successfully.' };
 };
 
@@ -563,22 +703,78 @@ const applyToJob = async (
   const existing = await Application.findOne({ jobId, tutorId: tutorUserId });
   if (existing) throw new AppError(400, 'You have already applied for this job!');
 
-  // Strict verification check: Tutor must be verified by admin
+  // Strict verification & profile completeness check: Tutor must complete all 5 profile sections
   const tutorProfile = await Tutor.findOne({ userId: tutorUserId });
   if (!tutorProfile) {
     throw new AppError(400, 'অনুগ্রহ করে প্রথমে আপনার টিউটর প্রোফাইল সম্পূর্ণ করুন।');
   }
 
+  // ── 1. Educational Info Check
+  const hasEducational = Boolean(
+    (tutorProfile.university && (tutorProfile.department || tutorProfile.qualification)) ||
+    ((tutorProfile as any).sscInstitute && (tutorProfile as any).sscResult) ||
+    ((tutorProfile as any).hscInstitute && (tutorProfile as any).hscResult) ||
+    ((tutorProfile as any).gradInstitute && (tutorProfile as any).gradDept)
+  );
+  if (!hasEducational) {
+    throw new AppError(400, 'টিউশন জবে আবেদনের পূর্বে আপনার শিক্ষাগত তথ্য (Educational Info) সম্পূর্ণ করুন।');
+  }
+
+  // ── 2. Tuition Info Check
+  const hasTuitionInfo = Boolean(
+    (Array.isArray(tutorProfile.subjects) && tutorProfile.subjects.length > 0) &&
+    (
+      (Array.isArray(tutorProfile.preferredAreas) && tutorProfile.preferredAreas.length > 0) ||
+      (tutorProfile.location?.district) ||
+      (Array.isArray(tutorProfile.mediums) && tutorProfile.mediums.length > 0) ||
+      (Array.isArray(tutorProfile.preferredClasses) && tutorProfile.preferredClasses.length > 0)
+    )
+  );
+  if (!hasTuitionInfo) {
+    throw new AppError(400, 'টিউশন জবে আবেদনের পূর্বে আপনার টিউশন পছন্দসমূহ (Tuition Info) সম্পূর্ণ করুন।');
+  }
+
+  // ── 3. Personal Info Check
+  const tutorUser = await User.findById(tutorUserId);
+  const hasPersonalInfo = Boolean(
+    (tutorUser?.name || (tutorProfile as any).fullName) &&
+    (tutorUser?.phone || (tutorProfile as any).phone) &&
+    (tutorProfile.gender)
+  );
+  if (!hasPersonalInfo) {
+    throw new AppError(400, 'টিউশন জবে আবেদনের পূর্বে আপনার ব্যক্তিগত তথ্য (Personal Info) সম্পূর্ণ করুন।');
+  }
+
+  // ── 4. Documents Info Check
+  const hasDocuments = Boolean(
+    tutorProfile.nid &&
+    tutorProfile.nidCard &&
+    tutorProfile.studentIdCard
+  );
+  if (!hasDocuments) {
+    throw new AppError(
+      403,
+      'টিউশন জবে আবেদন করার জন্য আপনার NID নাম্বার, NID কার্ডের ছবি এবং স্টুডেন্ট আইডি কার্ড আপলোড করতে হবে।',
+    );
+  }
+
+  // ── 5. Verification Info (Admin Approval) Check
   if (!tutorProfile.isVerified) {
-    if (!tutorProfile.nidCard || !tutorProfile.studentIdCard) {
+    if (tutorProfile.verificationStatus === 'Pending') {
       throw new AppError(
         403,
-        'টিউশন জবে আবেদন করার জন্য আপনার NID কার্ড এবং স্টুডেন্ট/টিউটর আইডি কার্ড আপলোড করে প্রোফাইল ভেরিফাই করতে হবে।',
+        'আপনার ভেরিফিকেশন আবেদনটি বর্তমানে অ্যাডমিন রিভিউতে রয়েছে। অ্যাডমিন অনুমোদন করার পর আপনি টিউশন জবে আবেদন করতে পারবেন।',
+      );
+    }
+    if (tutorProfile.verificationStatus === 'Rejected') {
+      throw new AppError(
+        403,
+        'আপনার ভেরিফিকেশন আবেদনটি প্রত্যাখ্যাত হয়েছে। অনুগ্রহ করে প্রোফাইল থেকে পুনরায় সঠিক ডকুমেন্টস আপলোড করে ভেরিফিকেশন সাবমিট করুন।',
       );
     }
     throw new AppError(
       403,
-      'আপনার ভেরিফিকেশন আবেদনটি বর্তমানে অ্যাডমিন রিভিউতে রয়েছে। অ্যাডমিন অনুমোদন করার পর আপনি টিউশন জবে আবেদন করতে পারবেন।',
+      'টিউশন জবে আবেদন করার জন্য প্রোফাইলের Verification ট্যাবে গিয়ে আবেদনটি সাবমিট করুন এবং অ্যাডমিন অনুমোদনের অপেক্ষা করুন।',
     );
   }
 
@@ -599,7 +795,6 @@ const applyToJob = async (
     }
   }
 
-  const tutorUser = await User.findById(tutorUserId);
   const salary = Number(payload.expectedSalary ?? job.salary);
   const mediaFee = Math.round(salary * 0.60); // 60% of Tuition Monthly Salary
 
@@ -679,17 +874,19 @@ const applyToJob = async (
 
   // Notify all staff (Super Admin, Admin, Moderator)
   try {
-    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } });
-    for (const staff of staffUsers) {
-      await NotificationService.createNotification({
-        userId: String(staff._id),
-        type: 'application',
-        title: 'টিউশন জব আবেদন জমা হয়েছে',
-        message: `${tutorName} (${tutorUser?.email || ''}) একটি টিউশন জবে (${job.medium} - ৳${job.salary}) আবেদন করেছেন।`,
-        referenceId: jobId,
-        referenceType: 'TuitionJob',
-      });
-    }
+    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } }).select('_id');
+    await Promise.all(
+      staffUsers.map((staff) =>
+        NotificationService.createNotification({
+          userId: String(staff._id),
+          type: 'application',
+          title: 'টিউশন জব আবেদন জমা হয়েছে',
+          message: `${tutorName} (${tutorUser?.email || ''}) একটি টিউশন জবে (${job.medium} - ৳${job.salary}) আবেদন করেছেন।`,
+          referenceId: jobId,
+          referenceType: 'TuitionJob',
+        }).catch((err) => console.warn(`⚠️ Staff notification failed for ${staff._id}:`, err)),
+      ),
+    );
   } catch (err) {
     console.warn('⚠️ Staff notification error on job application:', err);
   }

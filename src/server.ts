@@ -18,6 +18,19 @@ async function main() {
     await mongoose.connect(DB_URL);
     console.log('🌱 Connected to MongoDB successfully!');
 
+    // Ensure critical sparse index for email in production
+    try {
+      const userIndexes = await mongoose.connection.collection('users').indexes();
+      const emailIdx = userIndexes.find((idx: any) => idx.name === 'email_1');
+      if (emailIdx && !emailIdx.sparse) {
+        await mongoose.connection.collection('users').dropIndex('email_1');
+        await mongoose.connection.collection('users').createIndex({ email: 1 }, { unique: true, sparse: true });
+        console.log('🔧 Upgraded users.email_1 index to sparse index');
+      }
+    } catch (idxErr) {
+      console.warn('⚠️ Index sync warning (non-fatal):', idxErr);
+    }
+
     await connectRedis();
 
     const server = http.createServer(app);

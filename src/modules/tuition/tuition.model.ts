@@ -60,7 +60,10 @@ const tuitionJobSchema = new Schema<ITuitionJob, TuitionJobModel>(
       type: tuitionLocationSchema,
       required: [true, 'Location (District and Area) is required'],
     },
-    salary: { type: Number, required: [true, 'Salary is required'] },
+    salary: { type: Number, required: [true, 'Salary is required'], default: 0 },
+    salaryMax: { type: Number },
+    salaryRange: { type: String, trim: true },
+    negotiable: { type: Boolean, default: false },
     medium: { type: String, required: [true, 'Medium is required'], trim: true },
     genderPreference: {
       type: String,
@@ -91,6 +94,15 @@ const tuitionJobSchema = new Schema<ITuitionJob, TuitionJobModel>(
     /** শেষবার Matching Engine কখন চলেছে */
     matchingRunAt: { type: Date, default: null },
 
+    assignedTutorId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    activeDemoCount: {
+      type: Number,
+      default: 0,
+    },
     status: {
       type: String,
       enum: { values: TUITION_JOB_STATUSES, message: '{VALUE} is not a valid status' },
@@ -99,7 +111,7 @@ const tuitionJobSchema = new Schema<ITuitionJob, TuitionJobModel>(
     approvalStatus: {
       type: String,
       enum: { values: APPROVAL_STATUSES, message: '{VALUE} is not a valid approval status' },
-      default: 'Pending',
+      default: 'Approved',
     },
   },
   { timestamps: true, strict: false },
@@ -114,9 +126,15 @@ tuitionJobSchema.index({ approvalStatus: 1 });
 tuitionJobSchema.index({ medium: 1 });
 tuitionJobSchema.index({ salary: 1 });
 tuitionJobSchema.index({ postedBy: 1 });
+tuitionJobSchema.index({ createdAt: -1 });
 
-// Compound: most common job search pattern
-tuitionJobSchema.index({ approvalStatus: 1, status: 1, 'location.district': 1 });
+// Compound: most common job search and sort patterns
+tuitionJobSchema.index({ approvalStatus: 1, status: 1, createdAt: -1 });
+tuitionJobSchema.index({ approvalStatus: 1, status: 1, 'location.district': 1, createdAt: -1 });
+tuitionJobSchema.index({ approvalStatus: 1, status: 1, 'location.area': 1, createdAt: -1 });
+tuitionJobSchema.index({ approvalStatus: 1, status: 1, medium: 1, createdAt: -1 });
+tuitionJobSchema.index({ approvalStatus: 1, status: 1, studentClass: 1, createdAt: -1 });
+tuitionJobSchema.index({ approvalStatus: 1, status: 1, tuitionType: 1, createdAt: -1 });
 tuitionJobSchema.index({ approvalStatus: 1, subjects: 1 });
 tuitionJobSchema.index({ postedBy: 1, status: 1 });
 

@@ -9,10 +9,10 @@ router.get('/', TuitionController.getAllJobs);
 router.post('/', optionalAuth(), TuitionController.createJob);
 
 router.get('/:id', TuitionController.getJobById);
-router.get('/:id/shortlisted', auth('guardian', 'student', 'admin', 'moderator', 'super_admin'), TuitionController.getShortlistedTutors);
-router.post('/:id/rematch', auth('guardian', 'student', 'admin', 'moderator', 'super_admin'), TuitionController.rematchJob);
-router.patch('/:id', auth('guardian', 'student', 'admin', 'moderator', 'super_admin'), TuitionController.updateJob);
-router.delete('/:id', auth('guardian', 'student', 'admin', 'moderator', 'super_admin'), TuitionController.deleteJob);
+router.get('/:id/shortlisted', auth('guardian', 'student', 'coaching', 'admin', 'moderator', 'super_admin'), TuitionController.getShortlistedTutors);
+router.post('/:id/rematch', auth('guardian', 'student', 'coaching', 'admin', 'moderator', 'super_admin'), TuitionController.rematchJob);
+router.patch('/:id', auth('guardian', 'student', 'coaching', 'admin', 'moderator', 'super_admin'), TuitionController.updateJob);
+router.delete('/:id', auth('guardian', 'student', 'coaching', 'admin', 'moderator', 'super_admin'), TuitionController.deleteJob);
 
 router.post('/:id/apply', auth('tutor'), TuitionController.applyToJob);
 

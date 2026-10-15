@@ -51,6 +51,22 @@ const applicationSchema = new Schema<IApplication, ApplicationModel>(
       type: Date,
       default: Date.now,
     },
+    demoConfirmedAt: {
+      type: Date,
+      default: null,
+    },
+    demoCompletedAt: {
+      type: Date,
+      default: null,
+    },
+    finalConfirmedAt: {
+      type: Date,
+      default: null,
+    },
+    rejectionReason: {
+      type: String,
+      default: '',
+    },
 
     // ─── Digital Legal Contract & Deed Fields ─────────────────────────
     contractId: {
@@ -106,5 +122,7 @@ applicationSchema.index({ jobId: 1, status: 1 });
 applicationSchema.index({ matchScore: -1 });
 applicationSchema.index({ isAutoShortlisted: 1 });
 applicationSchema.index({ contractId: 1 });
+applicationSchema.index({ createdAt: -1 });
+applicationSchema.index({ status: 1, createdAt: -1 });
 
 export const Application = model<IApplication, ApplicationModel>('Application', applicationSchema);

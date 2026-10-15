@@ -44,6 +44,10 @@ export interface IApplication {
   isAutoShortlisted?: boolean;
   status: TApplicationStatus;
   appliedAt?: Date;
+  demoConfirmedAt?: Date;
+  demoCompletedAt?: Date;
+  finalConfirmedAt?: Date;
+  rejectionReason?: string;
 
   // ─── Digital Legal Contract & Deed Fields ─────────────────────────
   contractId?: string;              // TMC/{tuitionCustomId}/{timestampHash}

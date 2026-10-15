@@ -55,6 +55,9 @@ const userSchema = new Schema<IUser, UserModel>(
 
 userSchema.index({ phone: 1 }, { sparse: true });
 userSchema.index({ role: 1, status: 1 });
+userSchema.index({ createdAt: -1 });
+userSchema.index({ role: 1, createdAt: -1 });
+userSchema.index({ status: 1, createdAt: -1 });
 
 userSchema.pre('save', async function () {
   if (!this.isModified('password')) return;

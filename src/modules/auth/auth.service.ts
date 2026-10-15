@@ -11,7 +11,18 @@ import bcryptjs from 'bcryptjs';
 import { ACCESS_TOKEN_EXPIRES_IN, REFRESH_TOKEN_EXPIRES_IN } from './auth.constants.js';
 import type { IAuthResponse, ILoginUser, IRegisterUser, IVerifyOTP } from './auth.interface.js';
 
-const registerUser = async (payload: IRegisterUser & { tradeLicense?: string }) => {
+const registerUser = async (payload: IRegisterUser & { tradeLicense?: string; website?: string }) => {
+  // 🛡️ Honeypot check: If the hidden 'website' field is populated, silently reject bot
+  if (payload.website && payload.website.trim().length > 0) {
+    throw new AppError(400, 'Registration failed.');
+  }
+
+  // 🛡️ Extra Backend Sanitization: Block links or URLs in name
+  const urlPattern = /(https?:\/\/|www\.|\.com|\.net|\.org|\.ly|\.xyz|\.top|\.click|\.ru|\.tr|bit\.ly|t\.me)/i;
+  if (urlPattern.test(payload.name)) {
+    throw new AppError(400, 'Invalid name. Links and URLs are not permitted.');
+  }
+
   const isUserExist = await User.findOne({ email: payload.email });
   if (isUserExist) {
     throw new AppError(400, 'User with this email already exists!');
@@ -49,18 +60,10 @@ const registerUser = async (payload: IRegisterUser & { tradeLicense?: string }) 
     });
   }
 
-  // Real-time Push Notification & Alerts to ALL Admin and Moderator accounts
-  NotificationService.notifyStaffOnNewUserRegistration({
-    _id: user._id,
-    name: user.name,
-    email: user.email,
-    phone: user.phone,
-    role: user.role,
-    location: payload.location,
-  }).catch((err) => console.warn('⚠️ Staff registration notification error:', err));
-
   const targetEmail = user.email || '';
   const otp = generateOTP(targetEmail);
+
+  console.log(`🔑 [OTP Generated] Email: ${targetEmail} | OTP Code: ${otp}`);
 
   if (targetEmail) {
     // 🚀 Dispatched to BullMQ Queue asynchronously!
@@ -105,35 +108,14 @@ const verifyEmailOTP = async (payload: IVerifyOTP) => {
     throw new AppError(404, 'User not found!');
   }
 
-  // Create Staff Notification for verified user
-  try {
-    const staffUsers = await User.find({ role: { $in: ['super_admin', 'admin', 'moderator'] } });
-    if (user.role === 'coaching') {
-      for (const staff of staffUsers) {
-        await NotificationService.createNotification({
-          userId: String(staff._id),
-          type: 'user_registration',
-          title: '🏢 কোচিং সেন্টার ইমেইল ভেরিফিকেশন সম্পন্ন (অ্যাপ্রুভাল প্রয়োজন)',
-          message: `${user.name} (${user.email}) ইমেইল ভেরিফাই করেছেন এবং ড্যাশবোর্ড ব্যবহারের জন্য অ্যাডমিন অনুমোদনের অপেক্ষায় আছেন।`,
-          referenceId: String(user._id),
-          referenceType: 'User',
-        });
-      }
-    } else if (user.role === 'tutor') {
-      for (const staff of staffUsers) {
-        await NotificationService.createNotification({
-          userId: String(staff._id),
-          type: 'user_registration',
-          title: '✅ নতুন টিউটর ইমেইল ভেরিফিকেশন সম্পন্ন',
-          message: `${user.name} (${user.email}) সফলভাবে ইমেইল ভেরিফাই করেছেন এবং অ্যাকাউন্ট সক্রিয় রয়েছে।`,
-          referenceId: String(user._id),
-          referenceType: 'User',
-        });
-      }
-    }
-  } catch (err) {
-    console.warn('⚠️ Staff notification creation error:', err);
-  }
+  // Real-time Push Notification & Alerts to ALL Admin/Staff accounts (ONLY for verified real users)
+  NotificationService.notifyStaffOnNewUserRegistration({
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    role: user.role,
+  }).catch((err) => console.warn('⚠️ Staff registration notification error:', err));
 
   // Welcome email dispatched via BullMQ
   if (user.email) {

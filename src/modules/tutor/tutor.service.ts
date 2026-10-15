@@ -66,7 +66,7 @@ const buildFilterMatch = (query: ITutorSearchQuery): Record<string, unknown> => 
     match['preferredClasses'] = { $elemMatch: { $regex: query.studentClass, $options: 'i' } };
   }
   if (query.gender && query.gender !== 'Any' && query.gender !== 'All') {
-    match['gender'] = { $regex: query.gender, $options: 'i' };
+    match['gender'] = { $regex: `^${query.gender.trim()}$`, $options: 'i' };
   }
   
   // By default, ONLY verified tutors are visible publicly!
@@ -232,6 +232,20 @@ const updateMyProfile = async (
 ) => {
   const updateData: any = { ...payload };
 
+  // ⚠️ CRITICAL: Strip immutable and internal/protected fields to prevent MongoDB errors
+  delete updateData._id;
+  delete updateData.__v;
+  delete updateData.createdAt;
+  delete updateData.updatedAt;
+  delete updateData.userId;
+  delete updateData.user;
+  delete updateData.status;
+  delete updateData.isVerified;
+  delete updateData.isPremium;
+  delete updateData.rating;
+  delete updateData.reviewCount;
+  delete updateData.totalTuitionsCompleted;
+
   const avatarUrl = updateData.avatar || updateData.photoUrl;
   const newName = updateData.name || updateData.fullName;
 
@@ -258,7 +272,10 @@ const updateMyProfile = async (
 
   const profile = await Tutor.findOneAndUpdate(
     { userId },
-    { $set: updateData },
+    { 
+      $set: updateData,
+      $setOnInsert: { userId }
+    },
     { new: true, upsert: true, runValidators: true },
   );
 
@@ -274,7 +291,7 @@ const updateMyProfile = async (
 
 const submitVerification = async (
   userId: string,
-  payload: { nidCard: string; studentIdCard: string; nid?: string },
+  payload: { nidCard: string; nidBackCard?: string; studentIdCard: string; nid?: string },
 ) => {
   if (!payload.nidCard || !payload.studentIdCard) {
     throw new AppError(400, 'NID Card এবং Student/Tutor ID Card উভয় ডকুমেন্ট প্রদান করা আবশ্যক!');
@@ -288,13 +305,20 @@ const submitVerification = async (
     rejectionReason: '',
   };
 
+  if (payload.nidBackCard) {
+    updateData.nidBackCard = payload.nidBackCard;
+  }
+
   if (payload.nid) {
     updateData.nid = payload.nid;
   }
 
   const profile = await Tutor.findOneAndUpdate(
     { userId },
-    { $set: updateData },
+    { 
+      $set: updateData,
+      $setOnInsert: { userId }
+    },
     { new: true, upsert: true, runValidators: true },
   );
 
@@ -351,8 +375,20 @@ const submitVerification = async (
 };
 
 const getMyProfile = async (userId: string) => {
-  const profile = await Tutor.findOne({ userId }).populate('userId', 'name email phone avatar status');
-  if (!profile) throw new AppError(404, 'Tutor profile not found!');
+  let profile = await Tutor.findOne({ userId }).populate('userId', 'name email phone avatar status');
+  if (!profile) {
+    // If tutor record doesn't exist yet, auto-create one gracefully
+    const user = await User.findById(userId);
+    if (!user) throw new AppError(404, 'User account not found!');
+    
+    await Tutor.create({
+      userId,
+      university: '',
+      department: '',
+      location: { district: 'Dhaka', area: '' },
+    });
+    profile = await Tutor.findOne({ userId }).populate('userId', 'name email phone avatar status');
+  }
   return profile;
 };
 
